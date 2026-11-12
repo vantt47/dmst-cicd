@@ -38,10 +38,12 @@ const PROXY_PORT = Number(E.KUBE_PROXY_PORT ?? 8098);
 const K8S = `http://127.0.0.1:${PROXY_PORT}`;
 const GH_ORG = "KHCN-Thanh-Hoa";
 const REG = "ghcr.io/khcn-thanh-hoa";
-// Biến build của ảnh web staging (trùng build-push.yml)
+// Biến build của ảnh web staging (trùng build-push.yml). Chế độ tên miền: ke-hoach-5-san/tich-hop-5-san/08-che-do-ten-mien-con-va-duong-dan.md
 const WEB_ARGS = {
-  VITE_API_URL: E.STAGING_API_URL ?? "https://api-sangiaodich.dmst.vn/api",
+  VITE_API_URL: E.STAGING_API_URL ?? "https://sangiaodich.dmst.vn/api",
   VITE_GOOGLE_CLIENT_ID: E.STAGING_GOOGLE_CLIENT_ID ?? "764794139184-sn5rdvuqkqevqtrupcl8kkm7p53h5d1g.apps.googleusercontent.com",
+  // "" đường dẫn; "{san}-sangiaodich.dmst.vn" tên miền con
+  SAN_TEN_MIEN: E.STAGING_SAN_TEN_MIEN ?? "",
 };
 const FLUX_NS = "flux-system", FLUX_SOURCE = "tmdt", FLUX_KS = "staging";
 const SESSION_HOURS = 12, COOKIE = "stgdeploy";
