@@ -19,8 +19,19 @@ ${o.error ? `<p class="err">${esc(o.error)}</p>` : ""}
 <main>
 <section id="banner"></section>
 <section class="card" id="flux"></section>
-<h2>Service triển khai được</h2>
-<p class="muted small">Quy trình: build ảnh ở máy bạn → <code>docker push ghcr.io/khcn-thanh-hoa/&lt;ảnh&gt;:&lt;thẻ&gt;</code> → chọn thẻ ở đây → Deploy. Trang commit đổi <code>newTag</code> vào nhánh <b>staging</b>, Flux áp trong ~1 phút.</p>
+<h2>Build &amp; deploy</h2>
+<section class="card" id="build">
+<p class="muted small" style="margin-top:0">Máy build lấy mã nhánh/commit trên GitHub (nhớ <code>git push</code> trước), build ảnh, đẩy GHCR, commit đổi <code>newTag</code> vào nhánh <b>staging</b>, Flux áp lên cụm staging. Mỗi lần chạy 1 việc, việc sau xếp hàng.</p>
+<div class="build-row"><label>Nhánh hoặc commit<input id="b-ref" value="staging" list="b-branches" autocomplete="off"></label><datalist id="b-branches"></datalist>
+<div id="b-ref-info" class="muted small"></div></div>
+<div class="build-row" id="b-svcs"></div>
+<div class="build-row"><label class="inline"><input type="checkbox" id="b-only"> Chỉ build + đẩy GHCR, không deploy</label></div>
+<button id="b-go">Build</button>
+</section>
+<h2>Việc gần đây</h2>
+<section class="card" id="jobs"><p class="muted">Chưa có việc nào.</p></section>
+<h2>Service trên staging</h2>
+<p class="muted small">Quay lại bản cũ: bấm <b>Chọn…</b>, chọn thẻ ảnh có sẵn trên GHCR rồi <b>Deploy thẻ</b> (không build lại).</p>
 <section id="services" class="grid"></section>
 <h2>Lịch sử deploy <span class="muted small">(commit của kustomization.yaml)</span></h2>
 <section class="card" id="history"><p class="muted">Đang tải…</p></section>
@@ -50,6 +61,9 @@ input,select{font:inherit;padding:6px 8px;border:1px solid var(--line);border-ra
 .kv{display:grid;grid-template-columns:110px 1fr;gap:2px 8px;margin-top:8px;font-size:13px}.kv dt{color:var(--muted)}.kv dd{margin:0;word-break:break-all}
 .deploy-row{display:flex;gap:6px;margin-top:10px}.deploy-row input{flex:1}
 table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:500}
+.build-row{margin:8px 0}.build-row label{display:block;font-size:13px;color:var(--muted)}.build-row label input{margin-top:4px}
+label.inline{display:inline-flex !important;gap:6px;align-items:center;margin-right:14px;color:var(--fg) !important}label.inline input{width:auto;margin:0}
+.st-ok{color:var(--ok)}.st-failed{color:var(--bad)}.st-running,.st-queued{color:var(--warn)}
 .ns{margin-bottom:12px;overflow-x:auto}.ns h3{margin:0 0 6px;font-size:14px}
 #banner .card{border-color:var(--warn);margin-bottom:12px}
 .hist li{margin:6px 0;list-style:none}.hist{padding:0;margin:0}.hist a{color:var(--acc)}
@@ -117,7 +131,7 @@ function renderServices() {
      + (s.restartedAt ? '<dt>Restart lần cuối</dt><dd>' + fmt(s.restartedAt) + '</dd>' : '') + '</dl>'
      + (pods ? '<table style="margin-top:8px"><tr><th>Pod</th><th>Trạng thái</th><th>Ready</th><th>Restart</th><th>Tuổi</th><th></th></tr>' + pods + '</table>' : '<p class="bad small">Không có pod</p>')
      + '<div class="deploy-row"><input data-svc="' + esc(s.key) + '" placeholder="thẻ ảnh, vd stg-abc1234" ' + (canDeploy ? '' : 'disabled') + '>'
-     + '<button class="ghost" data-tags="' + esc(s.key) + '">Chọn…</button><button data-deploy="' + esc(s.key) + '" ' + (canDeploy && !busy.has(s.key) ? '' : 'disabled') + '>Deploy</button></div>'
+     + '<button class="ghost" data-tags="' + esc(s.key) + '">Chọn…</button><button data-deploy="' + esc(s.key) + '" ' + (canDeploy && !busy.has(s.key) ? '' : 'disabled') + '>Deploy thẻ</button></div>'
      + '<div class="row"><button class="ghost" data-restart="' + esc(s.key) + '" ' + (busy.has(s.key) ? 'disabled' : '') + '>Restart ' + esc(s.deploy) + '</button></div></div>';
   }).join("");
   box.querySelectorAll("input[data-svc]").forEach((i) => { if (typed[i.dataset.svc]) i.value = typed[i.dataset.svc]; });
@@ -133,9 +147,61 @@ function renderPods() {
       + Object.entries(p.images).map(([c, t]) => esc(c) + ': <code>' + esc(t) + '</code>').join("<br>") + '</td></tr>').join("") + '</table>' : '<p class="muted">Không có pod</p>') + '</div>').join("");
 }
 
+function renderBuildSvcs() {
+  const box = $("#b-svcs"); if (box.dataset.done) return; box.dataset.done = "1";
+  box.innerHTML = '<span class="muted small" style="display:block;margin-bottom:4px">Service cần build</span>' + S.services.map((s) =>
+    '<label class="inline"><input type="checkbox" value="' + esc(s.key) + '"' + (s.key === "migrate" || s.key === "backend" ? ' checked' : '') + '> ' + esc(s.label) + '</label>').join("")
+    + '<p class="muted small" style="margin:4px 0 0">Backend và Migrate nên build cùng nhau (cùng schema Prisma).</p>';
+}
+const STL = {queued:"Chờ", running:"Đang chạy", ok:"Xong", failed:"Lỗi"};
+function dur(a, b) { if (!a) return ""; const s = Math.round(((b ? new Date(b) : Date.now()) - new Date(a)) / 1000); return s < 60 ? s + " giây" : Math.floor(s/60) + " phút " + (s%60) + " giây"; }
+function renderJobs() {
+  if (!S.jobs.length) return;
+  $("#jobs").innerHTML = '<div style="overflow-x:auto"><table><tr><th>Lúc</th><th>Ai</th><th>Việc</th><th>Trạng thái</th><th>Thời gian</th><th></th></tr>' + S.jobs.map((j) =>
+    '<tr><td>' + fmt(j.created) + '</td><td>' + esc(j.user) + '</td><td>' + (j.kind === "build" ? 'Build <code>' + esc(j.ref) + '</code>' + (j.sha ? ' @<code>' + esc(j.sha.slice(0,7)) + '</code>' : '') + (j.deploy ? '' : ' <span class="muted">(chỉ build)</span>') : 'Deploy thẻ <code>' + esc(j.ref) + '</code>')
+    + '<br><span class="muted small">' + esc(j.services.join(", ")) + '</span>' + (j.error ? '<br><span class="bad small">' + esc(j.error.slice(0, 200)) + '</span>' : '') + '</td>'
+    + '<td class="st-' + j.status + '">' + STL[j.status] + '</td><td>' + dur(j.started, j.ended) + '</td><td><button class="ghost" data-job="' + esc(j.id) + '">Log</button></td></tr>').join("") + '</table></div>';
+  $("#jobs").querySelectorAll("[data-job]").forEach((b) => b.onclick = () => showJob(b.dataset.job));
+}
+let jobPoll = null;
+async function showJob(id) {
+  openDlg("Log việc " + id, '<pre id="jl"></pre>');
+  let from = 0; clearTimeout(jobPoll);
+  const tick = async () => {
+    if (!$("#dlg").open || !$("#jl")) return;
+    try {
+      const r = await api("/api/job?id=" + encodeURIComponent(id) + "&from=" + from);
+      const b = $("#dlg-body"); const atEnd = b.scrollTop + b.clientHeight >= b.scrollHeight - 30;
+      if (r.lines.length) { $("#jl").textContent += r.lines.join("\\n") + "\\n"; from = r.total; }
+      $("#dlg-title").textContent = "Log việc " + id + " · " + STL[r.status] + (r.commit ? " · commit " + r.commit.slice(0, 7) : "");
+      if (atEnd) b.scrollTop = b.scrollHeight;
+      if (r.status === "queued" || r.status === "running") jobPoll = setTimeout(tick, 1500); else { refresh(); loadHistory(); loadBranches();
+setInterval(() => { if (!document.hidden) loadHistory(); }, 60000); }
+    } catch (e) { $("#jl").textContent += "\\n" + e.message; }
+  };
+  tick();
+}
+async function loadBranches() {
+  try { const bs = await api("/api/branches"); window.BR = bs;
+    $("#b-branches").innerHTML = bs.map((b) => '<option value="' + esc(b.name) + '">' + esc(b.sha + " · " + b.subject.slice(0, 60)) + '</option>').join("");
+    showRefInfo();
+  } catch (e) { $("#b-ref-info").textContent = e.message; }
+}
+function showRefInfo() { const b = (window.BR || []).find((x) => x.name === $("#b-ref").value.trim());
+  $("#b-ref-info").textContent = b ? "Mới nhất: " + b.sha + " · " + b.subject + " · " + fmt(b.date) : ""; }
+$("#b-ref").oninput = showRefInfo;
+$("#b-go").onclick = async () => {
+  const ref = $("#b-ref").value.trim(); const services = [...document.querySelectorAll("#b-svcs input:checked")].map((i) => i.value);
+  const only = $("#b-only").checked;
+  if (!services.length) return alert("Chọn ít nhất 1 service");
+  if (!confirm("Build " + services.join(", ") + " từ " + ref + (only ? " (chỉ build)" : "\\nrồi deploy lên staging") + "?")) return;
+  $("#b-go").disabled = true;
+  try { const r = await api("/api/build", { ref, services, deploy: !only }); await refresh(); showJob(r.id); } catch (e) { alert(e.message); }
+  $("#b-go").disabled = false;
+};
 function render() {
-  $("#banner").innerHTML = S.gitError ? '<div class="card"><b class="warn">Chế độ chỉ xem.</b> ' + esc(S.gitError) + '</div>' : "";
-  renderFlux(); renderServices(); renderPods();
+  $("#banner").innerHTML = [S.clusterError, S.gitError].filter(Boolean).map((m) => '<div class="card"><b class="warn">Lưu ý:</b> ' + esc(m) + '</div>').join("");
+  renderFlux(); renderBuildSvcs(); renderJobs(); renderServices(); renderPods();
 }
 
 async function refresh() {
@@ -151,6 +217,7 @@ async function loadHistory() {
 
 function openDlg(title, html) { $("#dlg-title").textContent = title; $("#dlg-body").innerHTML = html; $("#dlg").showModal(); }
 $("#dlg-close").onclick = () => $("#dlg").close();
+$("#dlg").addEventListener("close", () => clearTimeout(jobPoll));
 function toast(m) { const t = document.createElement("div"); t.textContent = m; t.className = "card"; t.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:9;max-width:420px"; document.body.append(t); setTimeout(() => t.remove(), 5000); }
 
 async function pickTag(key) {
@@ -174,9 +241,8 @@ async function deploy(key) {
   busy.add(key); renderServices();
   try {
     const r = await api("/api/deploy", { svc: key, tag });
-    toast(r.unchanged ? "Thẻ " + tag + " đã có trong Git, đã yêu cầu Flux đồng bộ" : "Đã commit " + r.old + " → " + tag);
     document.querySelector('input[data-svc="' + key + '"]').value = "";
-    loadHistory();
+    await refresh(); showJob(r.id);
   } catch (e) { alert("Deploy lỗi: " + e.message); }
   busy.delete(key); setTimeout(refresh, 1500);
 }
