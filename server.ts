@@ -15,7 +15,15 @@
 import { createHmac, createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { APP_CSS, APP_JS, pageHtml } from "./ui";
+import { pageHtml } from "./ui";
+
+// Tệp tĩnh cùng thư mục, đọc 1 lần lúc chạy
+const asset = (f: string) => readFileSync(join(import.meta.dir, f));
+const STATIC: Record<string, [Buffer, string]> = {
+  "/app.css": [asset("app.css"), "text/css; charset=utf-8"],
+  "/app.js": [asset("app.js"), "text/javascript; charset=utf-8"],
+  "/logo.svg": [asset("logo-thihub.svg"), "image/svg+xml"],
+};
 
 const E = process.env;
 const PORT = Number(E.PORT ?? 8099);
@@ -60,12 +68,12 @@ const SERVICES: Service[] = [
     build: { context: "backend", file: "backend/Dockerfile", target: "runtime", suffix: "" } },
   { key: "migrate", label: "Migrate CSDL", note: "initContainer của backend: migrate + seed vùng trước khi backend chạy", image: `${REG}/tmdt-migrate`, ns: "tmdt", deploy: "backend", init: "migrate",
     build: { context: "backend", file: "backend/Dockerfile.migrate", suffix: "" } },
-  { key: "web", label: "Web (người mua, người bán, quản trị)", note: "sangiaodich, nguoiban-, quantri-sangiaodich.dmst.vn", image: `${REG}/tmdt-web`, ns: "tmdt", deploy: "web", container: "web",
+  { key: "web", label: "Web", note: "sangiaodich, nguoiban-, quantri-sangiaodich.dmst.vn", image: `${REG}/tmdt-web`, ns: "tmdt", deploy: "web", container: "web",
     build: { context: ".", file: "deploy/nginx/Dockerfile", target: "k8s", args: WEB_ARGS, suffix: "-staging" } },
-  { key: "ome-agent", label: "OME agent (livestream)", note: "sidecar của ome-origin, ns tmdt-live", image: `${REG}/tmdt-ome-agent`, ns: "tmdt-live", deploy: "ome-origin", container: "agent",
+  { key: "ome-agent", label: "OME agent", note: "sidecar của ome-origin, ns tmdt-live", image: `${REG}/tmdt-ome-agent`, ns: "tmdt-live", deploy: "ome-origin", container: "agent",
     build: { context: "deploy/ome/agent", file: "deploy/ome/agent/Dockerfile", suffix: "" } },
 ];
-const VIEW_NS = ["tmdt", "tmdt-live", "tmdt-data", "tmdt-storage", "cloudflared"];
+const VIEW_NS = [...new Set(SERVICES.map((s) => s.ns))];
 const tagFor = (s: Service, sha: string) => `stg-${sha.slice(0, 7)}-pc${s.build.suffix}`;
 
 // ---------------- Tiến trình con ----------------
@@ -140,7 +148,8 @@ async function listTags(image: string): Promise<TagInfo[]> {
   if (!r.ok) throw new Error(`GitHub Packages ${r.status}`);
   const out: TagInfo[] = [];
   for (const v of (await r.json()) as any[]) for (const t of v.metadata?.container?.tags ?? []) out.push({ tag: t, created: v.created_at });
-  return out.sort((a, b) => (b.created ?? "").localeCompare(a.created ?? ""));
+  // staging: ẩn thẻ build cho production
+  return out.filter((t) => !/production/.test(t.tag)).sort((a, b) => (b.created ?? "").localeCompare(a.created ?? ""));
 }
 
 // ---------------- Git (clone riêng trong WORK) ----------------
@@ -406,7 +415,6 @@ async function state() {
       sourceReady: cond(src)?.status ?? "Unknown", sourceMessage: cond(src)?.message ?? "",
     },
     services,
-    namespaces: VIEW_NS.map((ns) => ({ ns, pods: pods[ns].map(({ labels, ...p }) => p) })),
     jobs: jobs.map(({ log, ...j }) => ({ ...j, lines: log.length })),
   };
 }
@@ -459,8 +467,8 @@ const server = Bun.serve({
     const url = new URL(req.url);
     const p = url.pathname;
     if (p === "/healthz") return new Response("ok");
-    if (p === "/app.css") return new Response(APP_CSS, { headers: { "Content-Type": "text/css; charset=utf-8", "Cache-Control": "no-cache" } });
-    if (p === "/app.js") return new Response(APP_JS, { headers: { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache" } });
+    const st = STATIC[p];
+    if (st) return new Response(st[0], { headers: { "Content-Type": st[1], "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff" } });
 
     if (p === "/login" && req.method === "POST") {
       const ip = clientIp(req, srv);

@@ -1,6 +1,6 @@
 # Trang build/deploy staging (stg-deploy-sangiaodich.dmst.vn) chạy trên PC quản trị.
 #
-# Cài/cập nhật (chạy lại mỗi khi sửa server.ts, ui.ts):
+# Cài/cập nhật (chạy lại mỗi khi sửa server.ts, ui.ts, app.js, app.css):
 #   powershell -ExecutionPolicy Bypass -File deploy\stg-deploy\start.ps1 -Install
 #   -> chép mã vào D:\DMST\stg-deploy-work\app, tạo Scheduled Task "stg-deploy" chạy khi đăng nhập Windows, khởi động lại.
 # Gỡ:  Unregister-ScheduledTask stg-deploy -Confirm:$false
@@ -17,7 +17,7 @@ $App = Join-Path $Work "app"
 
 if ($Install) {
   New-Item -ItemType Directory -Force $App | Out-Null
-  Copy-Item -Force (Join-Path $PSScriptRoot "server.ts"), (Join-Path $PSScriptRoot "ui.ts"), (Join-Path $PSScriptRoot "start.ps1") $App
+  Copy-Item -Force ("server.ts", "ui.ts", "app.js", "app.css", "logo-thihub.svg", "start.ps1" | ForEach-Object { Join-Path $PSScriptRoot $_ }) $App
   $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$App\start.ps1`""
   $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
   $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
