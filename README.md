@@ -7,8 +7,14 @@ Công cụ CI/CD của các dự án DMST, tách khỏi repo ứng dụng.
 Trang build/deploy staging cho Sàn TMĐT: https://stg-deploy-sangiaodich.dmst.vn
 
 - Chạy trên PC quản trị (Windows, Bun, Docker Desktop, kubectl qua Tailscale, cloudflared), không chạy trong cụm.
-- Dev bấm **Build**: PC lấy mã từ repo `KHCN-Thanh-Hoa/5-san-tmdt`, build và push ảnh lên GHCR, commit đổi `newTag` trong
+- Dev chọn nhánh/commit rồi bấm **Chạy kiểm tra** (CI): chạy lại đúng các job của `.github/workflows/ci.yml`
+  (route-cu, quet-vitu; backend: tsc, OpenAPI, api-client, kiểm thử hợp đồng v1, jest; phone, manage, seller-center:
+  tsc + build) trong container Docker dùng một lần ([stg-deploy/checks.ts](stg-deploy/checks.ts),
+  [stg-deploy/ci/Dockerfile](stg-deploy/ci/Dockerfile)). Mã nạp bằng `git archive`, không chạm bí mật của PC.
+- Nút **Build** chỉ mở khi commit đang chọn đã qua kiểm tra (server cũng chặn). Build: PC build ảnh từ đúng commit đã
+  kiểm, quét Trivy (backend, web: chặn lỗ hổng CRITICAL đã có bản vá), push GHCR, commit đổi `newTag` trong
   `ecommerce-monorepo/deploy/k8s/clusters/staging/kustomization.yaml` vào nhánh `staging`, rồi gọi Flux áp ngay.
+- Sửa `ci.yml` bên repo ứng dụng thì sửa `GROUPS` trong `checks.ts` cho khớp.
 - Hoặc **Deploy** một thẻ ảnh đã có trên GHCR.
 
 Mã chạy thẳng từ clone `D:\DMST\stg-deploy-work\cicd` theo `origin/main`. Sửa trang = commit + push `main`; trang tự

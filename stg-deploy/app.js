@@ -120,9 +120,18 @@ function renderServices() {
 }
 const svcLabel = (k) => (S.services.find((s) => s.key === k) || { label: k }).label;
 function renderJobs() {
-  if (!S.jobs.length) return;
+  const items = [...S.jobs, ...(S.checks || []).map((c) => ({ ...c, kind: "check" }))].sort((a, b) => (a.created < b.created ? 1 : -1)).slice(0, 30);
+  if (!items.length) return;
   const IC = { ok: ICON.check, failed: ICON.x, running: ICON.spin, queued: ICON.clock };
-  $("#tab-jobs").innerHTML = S.jobs.map((j) => {
+  $("#tab-jobs").innerHTML = items.map((j) => {
+    if (j.kind === "check") {
+      const st = j.status === "running" ? "đang chạy " + dur(j.started) : j.status === "queued" ? "đang chờ" : dur(j.started, j.ended);
+      return '<button class="job" data-check="' + esc(j.id) + '"><span class="job-ic ' + j.status + '">' + IC[j.status] + "</span><span>"
+        + '<div class="job-t">Kiểm tra <code>' + esc(j.ref) + '</code> <span class="muted mono">@' + esc(j.sha.slice(0, 7)) + "</span></div>"
+        + '<div class="job-s">' + esc(j.subject) + "</div>"
+        + '<div class="job-s">' + esc(j.user) + " · " + ago(j.created) + " · " + st + "</div>"
+        + (j.error ? '<div class="job-err">' + esc(j.error) + "</div>" : "") + "</span></button>";
+    }
     const title = j.kind === "build"
       ? (j.deploy ? "Build & deploy " : "Build ") + "<code>" + esc(j.ref) + "</code>" + (j.sha ? ' <span class="muted mono">@' + esc(j.sha.slice(0, 7)) + "</span>" : "")
       : "Đổi bản <code>" + esc(j.ref) + "</code>";
@@ -134,11 +143,15 @@ function renderJobs() {
       + (j.error ? '<div class="job-err">' + esc(j.error) + "</div>" : "") + "</span></button>";
   }).join("");
   $$("[data-job]").forEach((b) => (b.onclick = () => showJob(b.dataset.job)));
+  $$("[data-check]").forEach((b) => (b.onclick = () => showCheck(b.dataset.check)));
 }
 async function refresh() {
   try {
     S = await api("/api/state");
     renderTop(); renderBuildSvcs(); renderServices(); renderJobs();
+    // Lượt kiểm tra của commit đang chọn vừa đổi trạng thái: tải lại khung kiểm tra
+    const c = CK && CK.check && (S.checks || []).find((x) => x.id === CK.check.id);
+    if (c && (c.status !== CK.check.status || c.status === "running")) loadCheck();
   } catch (e) {
     $("#alerts").innerHTML = '<div class="alert alert-bad">Không tải được trạng thái: ' + esc(e.message) + "</div>";
   }
@@ -187,29 +200,125 @@ function showRefInfo() {
   const b = BR.find((x) => x.name === $("#b-ref").value.trim());
   $("#b-ref-info").innerHTML = b ? "<code>" + esc(b.sha) + '</code><span class="subj">' + esc(b.subject) + "</span><span>· " + ago(b.date) + "</span>" : "";
 }
-$("#b-ref").addEventListener("input", showRefInfo);
+let refTimer = null;
+$("#b-ref").addEventListener("input", () => {
+  showRefInfo();
+  CK = null; renderCheck();
+  clearTimeout(refTimer);
+  refTimer = setTimeout(loadCheck, 500);
+});
 $("#b-only").addEventListener("change", () => {
   $("#b-go").lastChild.textContent = $("#b-only").checked ? "Build" : "Build & deploy";
 });
+
+// ---------- Kiểm tra (CI): Build chỉ mở khi commit đang chọn đã qua kiểm tra ----------
+let CK = null, ckSeq = 0, ckErr = "";
+const CG_IC = { ok: ICON.check, warn: ICON.check, failed: ICON.x, running: ICON.spin, pending: ICON.clock, skipped: ICON.clock };
+async function loadCheck() {
+  const ref = $("#b-ref").value.trim();
+  const seq = ++ckSeq;
+  if (!ref) { CK = null; ckErr = "Nhập nhánh hoặc commit"; return renderCheck(); }
+  try {
+    const r = await api("/api/check?ref=" + encodeURIComponent(ref));
+    if (seq !== ckSeq) return;
+    CK = r; ckErr = "";
+  } catch (e) {
+    if (seq !== ckSeq) return;
+    CK = null; ckErr = e.message;
+  }
+  renderCheck();
+}
+function groupChips(c) {
+  return '<div class="ci-groups">' + c.groups.map((g) => '<span class="cg ' + g.status + '" title="' + esc(g.steps.map((s) => s.name + ": " + s.status).join("\n")) + '">' + CG_IC[g.status] + esc(g.label) + "</span>").join("") + "</div>";
+}
+function renderCheck() {
+  const box = $("#b-ci"), go = $("#b-go");
+  const c = CK && CK.check;
+  const passed = !!(c && c.status === "ok");
+  go.disabled = !passed;
+  go.title = passed ? "" : "Commit phải qua kiểm tra (CI) trước khi Build";
+  if (!CK) {
+    box.className = "ci";
+    box.innerHTML = '<div class="ci-head"><span class="ci-msg muted">' + esc(ckErr || "Đang tải…") + "</span></div>";
+    return;
+  }
+  const sha = '<code>' + esc(CK.sha.slice(0, 7)) + "</code>";
+  const logBtn = c ? '<button class="btn btn-sm" data-ci="log">' + ICON.log + "Log</button>" : "";
+  const runBtn = (label, primary) => '<button class="btn btn-sm' + (primary ? " btn-primary" : "") + '" data-ci="run">' + ICON.restart + label + "</button>";
+  let cls = "ci", msg, acts;
+  if (!c) { msg = ICON.clock + "<span>Commit " + sha + " chưa được kiểm tra.</span>"; acts = runBtn("Chạy kiểm tra", true); }
+  else if (c.status === "queued") { cls += " run"; msg = ICON.clock + "<span>Đang chờ kiểm tra " + sha + "…</span>"; acts = logBtn; }
+  else if (c.status === "running") { cls += " run"; msg = ICON.spin + "<span>Đang kiểm tra " + sha + " · " + dur(c.started) + "</span>"; acts = logBtn; }
+  else if (c.status === "ok") {
+    cls += " ok";
+    const warn = c.groups.some((g) => g.status === "warn") ? " (có bước cảnh báo không chặn)" : "";
+    msg = ICON.check + "<span>Đã qua kiểm tra " + sha + warn + " · " + ago(c.ended) + "</span>"; acts = logBtn;
+  } else { cls += " bad"; msg = ICON.x + "<span>" + esc(c.error || "Kiểm tra không qua") + " · " + sha + "</span>"; acts = logBtn + runBtn("Chạy lại"); }
+  box.className = cls;
+  box.innerHTML = '<div class="ci-head"><span class="ci-msg">' + msg + '</span><span class="ci-acts">' + acts + "</span></div>" + (c ? groupChips(c) : "");
+  const lb = $('[data-ci="log"]', box); if (lb) lb.onclick = () => showCheck(c.id);
+  const rb = $('[data-ci="run"]', box); if (rb) rb.onclick = startCheck;
+}
+async function startCheck() {
+  const ref = $("#b-ref").value.trim();
+  if (!ref) return toast("Nhập nhánh hoặc commit", true);
+  $$("#b-ci button").forEach((b) => (b.disabled = true));
+  try { const r = await api("/api/check", { ref }); await loadCheck(); refresh(); showCheck(r.id); }
+  catch (e) { toast(e.message, true); renderCheck(); }
+}
+let ckTimer = null;
+function showCheck(id) {
+  const STL = { queued: ["idle", "Đang chờ"], running: ["run", "Đang chạy"], ok: ["ok", "Đạt"], failed: ["bad", "Không qua"] };
+  openDlg("Kiểm tra", '<div class="ci-steps" id="ck-steps"></div><pre class="term" id="cl"></pre>', "", { wide: true, term: true });
+  let from = 0;
+  clearTimeout(ckTimer);
+  onDlgClose = () => clearTimeout(ckTimer);
+  const tick = async () => {
+    if (!dlg.open || !$("#cl")) return;
+    try {
+      const r = await api("/api/checkrun?id=" + encodeURIComponent(id) + "&from=" + from);
+      const b = $("#dlg-body");
+      const atEnd = b.scrollTop + b.clientHeight >= b.scrollHeight - 40;
+      if (r.lines.length) {
+        $("#cl").insertAdjacentHTML("beforeend", r.lines.map((l) => { const c = lineCls(l); return c ? '<span class="' + c + '">' + esc(l) + "</span>" : esc(l); }).join("\n") + "\n");
+        from = r.total;
+      }
+      $("#ck-steps").innerHTML = r.groups.map((g) => "<div><h4>" + '<span class="cg ' + g.status + '">' + CG_IC[g.status] + esc(g.label) + "</span></h4>"
+        + g.steps.map((s) => '<div class="ci-step ' + s.status + '">' + CG_IC[s.status] + "<span>" + esc(s.name) + '</span><span class="t">' + (s.ms ? Math.round(s.ms / 1000) + "s" : "") + "</span></div>").join("") + "</div>").join("");
+      const [c, t] = STL[r.status];
+      $("#dlg-title").innerHTML = '<span class="pill ' + c + '">' + t + "</span><span>Kiểm tra " + esc(r.ref) + " @" + esc(r.sha.slice(0, 7)) + '</span><span class="muted light">· ' + esc(r.user) + (r.started ? " · " + dur(r.started, r.ended) : "") + "</span>";
+      if (atEnd) b.scrollTop = b.scrollHeight;
+      if (r.status === "queued" || r.status === "running" || r.lines.length) ckTimer = setTimeout(tick, r.lines.length >= 5000 ? 50 : 2000);
+      else loadCheck();
+    } catch (e) { $("#cl").insertAdjacentHTML("beforeend", '<span class="l-bad">' + esc(e.message) + "</span>\n"); }
+  };
+  tick();
+}
+
 $("#b-go").onclick = async () => {
   const ref = $("#b-ref").value.trim();
   const services = $$("#b-svcs input:checked").map((i) => i.value);
   const only = $("#b-only").checked;
   if (!ref) return toast("Nhập nhánh hoặc commit", true);
   if (!services.length) return toast("Chọn ít nhất 1 service", true);
+  if (!CK || !CK.check || CK.check.status !== "ok") return toast("Commit chưa qua kiểm tra (CI)", true);
+  const sha = CK.sha;
   const ok = await confirmBox(only ? "Build" : "Build & deploy",
-    "Build <b>" + esc(services.map(svcLabel).join(", ")) + "</b> từ <code>" + esc(ref) + "</code>" + (only ? ", chỉ đẩy ảnh lên GHCR." : " rồi triển khai lên staging."),
+    "Build <b>" + esc(services.map(svcLabel).join(", ")) + "</b> từ <code>" + esc(ref) + "</code> @<code>" + esc(sha.slice(0, 7)) + "</code> (đã qua kiểm tra)" + (only ? ", chỉ đẩy ảnh lên GHCR." : " rồi triển khai lên staging."),
     only ? "Build" : "Build & deploy");
   if (!ok) return;
   $("#b-go").disabled = true;
-  try { const r = await api("/api/build", { ref, services, deploy: !only }); await refresh(); showJob(r.id); }
-  catch (e) { toast(e.message, true); }
-  $("#b-go").disabled = false;
+  try { const r = await api("/api/build", { ref, sha, services, deploy: !only }); await refresh(); showJob(r.id); }
+  catch (e) { toast(e.message, true); loadCheck(); }
+  renderCheck();
 };
 
 // ---------- Log việc build ----------
 let jobTimer = null;
 function lineCls(l) {
+  l = l.replace(/^\[[\w-]+\] /, ""); // dòng log kiểm tra có tiền tố [nhóm]
+  if (/^▶/.test(l)) return "l-h";
+  if (/^⚠/.test(l)) return "l-dim";
   if (/^══/.test(l)) return "l-h";
   if (/^✔|Rollout xong|^Đã push/.test(l)) return "l-ok";
   if (/^✘|ERROR|error:|failed/i.test(l)) return "l-bad";
@@ -313,5 +422,7 @@ async function restart(key) {
 
 refresh();
 loadBranches();
+loadCheck();
 setInterval(() => { if (!document.hidden) refresh(); }, 5000);
-setInterval(() => { if (!document.hidden) loadBranches(); }, 60000);
+// Nhánh có commit mới: khung kiểm tra chuyển sang commit mới (Build khóa lại tới khi commit đó qua kiểm tra)
+setInterval(() => { if (!document.hidden) { loadBranches(); loadCheck(); } }, 60000);

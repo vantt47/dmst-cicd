@@ -44,10 +44,12 @@ export function pageHtml(o: { user?: string; error?: string; name?: string }) {
           <datalist id="b-branches"></datalist>
         </label>
         <div class="commit-line" id="b-ref-info"></div>
+        <div class="field"><span>Kiểm tra (CI) <span class="muted light">· typecheck, test, build như ci.yml, bắt buộc trước khi Build</span></span>
+          <div class="ci" id="b-ci"><div class="ci-head"><span class="muted">Đang tải…</span></div></div></div>
         <div class="field"><span>Service</span><div class="chips" id="b-svcs"></div></div>
         <div class="build-foot">
           <label class="switch"><input type="checkbox" id="b-only"><span class="track"></span><span>Chỉ build, không deploy</span></label>
-          <button class="btn btn-primary" id="b-go"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>Build &amp; deploy</button>
+          <button class="btn btn-primary" id="b-go" disabled title="Commit phải qua kiểm tra (CI) trước"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>Build &amp; deploy</button>
         </div>
       </div>
     </section>

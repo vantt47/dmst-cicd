@@ -21,6 +21,7 @@ import { createHmac, createHash, randomBytes, timingSafeEqual } from "node:crypt
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { pageHtml } from "./ui";
+import { newCheck, runCheck, type CheckRun } from "./checks";
 
 // Tệp tĩnh cùng thư mục, đọc 1 lần lúc chạy
 const asset = (f: string) => readFileSync(join(import.meta.dir, f));
@@ -71,15 +72,17 @@ type Service = {
   // Deployment khác cùng namespace dùng chung ảnh (backend-worker): đổi thẻ là rollout cả nó, Restart cũng khởi động lại nó
   also?: string[];
   // build: thư mục ngữ cảnh + Dockerfile (tương đối ecommerce-monorepo/), target, build-arg; tag theo commit
-  build: { context: string; file: string; target?: string; args?: Record<string, string>; suffix: string };
+  // scan: quét Trivy trước khi đẩy (build-push.yml quét backend, web)
+  build: { context: string; file: string; target?: string; args?: Record<string, string>; suffix: string; scan?: boolean };
 };
+const TRIVY_IMAGE = "aquasec/trivy:0.76.1"; // trùng build-push.yml
 const SERVICES: Service[] = [
   { key: "backend", label: "Backend API", note: "api-sangiaodich.dmst.vn", image: `${REG}/tmdt-backend`, ns: "tmdt", deploy: "backend", container: "backend", also: ["backend-worker"],
-    build: { context: "backend", file: "backend/Dockerfile", target: "runtime", suffix: "" } },
+    build: { context: "backend", file: "backend/Dockerfile", target: "runtime", suffix: "", scan: true } },
   { key: "migrate", label: "Migrate CSDL", note: "initContainer của backend: migrate + seed vùng trước khi backend chạy", image: `${REG}/tmdt-migrate`, ns: "tmdt", deploy: "backend", init: "migrate", also: ["backend-worker"],
     build: { context: "backend", file: "backend/Dockerfile.migrate", suffix: "" } },
   { key: "web", label: "Web", note: "sangiaodich, nguoiban-, quantri-sangiaodich.dmst.vn", image: `${REG}/tmdt-web`, ns: "tmdt", deploy: "web", container: "web",
-    build: { context: ".", file: "deploy/nginx/Dockerfile", target: "k8s", args: WEB_ARGS, suffix: "-staging" } },
+    build: { context: ".", file: "deploy/nginx/Dockerfile", target: "k8s", args: WEB_ARGS, suffix: "-staging", scan: true } },
   { key: "ome-agent", label: "OME agent", note: "sidecar của ome-origin, ns tmdt-live", image: `${REG}/tmdt-ome-agent`, ns: "tmdt-live", deploy: "ome-origin", container: "agent",
     build: { context: "deploy/ome/agent", file: "deploy/ome/agent/Dockerfile", suffix: "" } },
 ];
@@ -245,7 +248,7 @@ const RUNNING_TREE = (await toolGit(["rev-parse", "HEAD:./"])).out.trim();
 if (RUNNING_TREE) console.log(`Mã trang: cây ${RUNNING_TREE.slice(0, 10)} (${import.meta.dir})`);
 else console.log(`⚠ ${import.meta.dir} không nằm trong git, không tự cập nhật mã trang.`);
 let restartPending = false;
-const busyJobs = () => jobs.filter((j) => j.status === "queued" || j.status === "running").length;
+const busyJobs = () => [...jobs, ...checks].filter((j) => j.status === "queued" || j.status === "running").length;
 function exitForUpdate() {
   if (exiting) return;
   exiting = true;
@@ -418,13 +421,76 @@ function enqueue(j: Job, work: (j: Job, log: (l: string) => void) => Promise<voi
 // Xóa log job cũ trên đĩa
 try { const fs = readdirSync(join(WORK, "jobs")).sort(); for (const f of fs.slice(0, Math.max(0, fs.length - 200))) rmSync(join(WORK, "jobs", f)); } catch {}
 
+// ---------------- Kiểm tra (CI) trước khi Build ----------------
+// Mỗi commit phải qua kiểm tra (checks.ts, giống ci.yml) thì mới Build được. Kết quả lưu WORK/checks/<id>.json (+ .log),
+// còn sau khi trang khởi động lại. Chạy lần lượt từng lượt (hàng đợi riêng, không chặn Deploy thẻ có sẵn).
+const CHECK_DIR = join(WORK, "checks");
+mkdirSync(CHECK_DIR, { recursive: true });
+const checks: CheckRun[] = [];
+const CHECK_KEEP = 200;
+try {
+  const files = readdirSync(CHECK_DIR).filter((f) => f.endsWith(".json")).sort();
+  for (const f of files.slice(0, Math.max(0, files.length - CHECK_KEEP))) { rmSync(join(CHECK_DIR, f)); rmSync(join(CHECK_DIR, f.replace(/\.json$/, ".log")), { force: true }); }
+  for (const f of files.slice(-CHECK_KEEP).reverse()) {
+    const c: CheckRun = JSON.parse(readFileSync(join(CHECK_DIR, f), "utf8"));
+    c.log = [];
+    if (c.status === "queued" || c.status === "running") { c.status = "failed"; c.error = "Bị ngắt do trang khởi động lại, chạy lại kiểm tra"; c.ended ??= new Date().toISOString(); }
+    checks.push(c);
+  }
+} catch (e: any) { console.error("Đọc kết quả kiểm tra cũ lỗi:", e.message); }
+const saveCheck = (c: CheckRun) => { const { log, ...rest } = c; try { writeFileSync(join(CHECK_DIR, `${c.id}.json`), JSON.stringify(rest)); } catch {} };
+const checkLogLines = (c: CheckRun) => {
+  if (c.log.length) return c.log;
+  try { return readFileSync(join(CHECK_DIR, `${c.id}.log`), "utf8").split("\n").filter(Boolean); } catch { return []; }
+};
+// Lượt kiểm tra mới nhất của commit
+const checkOf = (sha: string) => checks.find((c) => c.sha === sha);
+const checkSummary = ({ log, ...c }: CheckRun) => c;
+let checkQueue: Promise<void> = Promise.resolve();
+function enqueueCheck(c: CheckRun) {
+  checks.unshift(c);
+  saveCheck(c);
+  checkQueue = checkQueue.then(async () => {
+    const log = (l: string) => {
+      const x = l.replace(/\x1b\[[0-9;]*m/g, "");
+      c.log.push(x);
+      if (c.log.length > 40_000) c.log.splice(0, 10_000);
+      try { appendFileSync(join(CHECK_DIR, `${c.id}.log`), x + "\n"); } catch {}
+    };
+    c.status = "running"; c.started = new Date().toISOString(); saveCheck(c);
+    let t: Timer | null = null;
+    const changed = () => { t ??= setTimeout(() => { t = null; saveCheck(c); }, 1000); };
+    try { await runCheck(c, { run, repo: REPO, log, changed }); c.status = "ok"; log("✔ Kiểm tra đạt, có thể Build commit này."); }
+    catch (e: any) { c.status = "failed"; c.error = String(e?.message ?? e); log("✘ " + c.error); }
+    c.ended = new Date().toISOString();
+    saveCheck(c);
+    c.log = []; // log đầy đủ nằm trong tệp .log
+    console.log(`${c.ended} kiểm tra ${c.id} ${c.sha.slice(0, 7)} ${c.status} (${c.user})`);
+    if (restartPending && !busyJobs()) exitForUpdate();
+  });
+}
+// Nhánh hoặc commit -> sha đầy đủ (theo origin), null nếu không có
+async function resolveRef(ref: string) {
+  await ensureRepo();
+  await fetchRepo();
+  const rev = /^[0-9a-f]{7,40}$/.test(ref) ? ref : `origin/${ref}`;
+  const r = await run(["git", "-C", REPO, "rev-parse", "--verify", "-q", `${rev}^{commit}`], { quiet: true });
+  const sha = r.code === 0 ? r.out.trim() : "";
+  if (!sha) return null;
+  const subject = (await git(["log", "-1", "--format=%s", sha])).trim();
+  return { sha, subject };
+}
+
 async function buildJob(j: Job, log: (l: string) => void) {
   await ensureRepo(log);
   log(`Lấy mã mới từ GitHub…`);
   await fetchRepo(true);
-  const ref = /^[0-9a-f]{7,40}$/.test(j.ref) ? j.ref : `origin/${j.ref}`;
-  const sha = (await git(["rev-parse", "--verify", `${ref}^{commit}`])).trim();
+  // sha đã chốt lúc bấm Build (commit đã qua kiểm tra); nhánh có commit mới sau đó cũng không đổi bản build
+  const sha = j.sha ?? (await git(["rev-parse", "--verify", `${/^[0-9a-f]{7,40}$/.test(j.ref) ? j.ref : `origin/${j.ref}`}^{commit}`])).trim();
   j.sha = sha;
+  const ck = checkOf(sha);
+  if (ck?.status !== "ok") throw new Error(`Commit ${sha.slice(0, 7)} chưa qua kiểm tra (CI)`);
+  log(`Kiểm tra (CI) đạt lúc ${ck.ended} (lượt ${ck.id}).`);
   j.subject = (await git(["log", "-1", "--format=%s", sha])).trim();
   log(`Commit ${sha.slice(0, 7)}: ${j.subject}`);
   const svcs = SERVICES.filter((s) => j.services.includes(s.key));
@@ -446,7 +512,16 @@ async function buildJob(j: Job, log: (l: string) => void) {
     cmd.push("--label", `org.opencontainers.image.revision=${sha}`, "--label", `vn.dmst.stg-deploy.by=${j.user}`, join(root, b.context));
     const t0 = Date.now();
     await must(cmd, { onLine: log, env: { DOCKER_BUILDKIT: "1" } });
-    log(`Build xong sau ${Math.round((Date.now() - t0) / 1000)} giây. Đẩy lên GHCR…`);
+    log(`Build xong sau ${Math.round((Date.now() - t0) / 1000)} giây.`);
+    if (b.scan) {
+      // Như build-push.yml: chặn khi có lỗ hổng CRITICAL đã có bản vá; quét ảnh cục bộ trước khi đẩy
+      log(`Quét lỗ hổng (Trivy, CRITICAL đã có bản vá)…`);
+      const r = await run(["docker", "run", "--rm", "-v", "/var/run/docker.sock:/var/run/docker.sock", "-v", "trivy-cache:/root/.cache",
+        TRIVY_IMAGE, "image", "--quiet", "--severity", "CRITICAL", "--ignore-unfixed", "--exit-code", "1", ref], { onLine: log });
+      if (r.code !== 0) { await run(["docker", "image", "rm", ref]); throw new Error(`Trivy: ${s.label} có lỗ hổng CRITICAL đã có bản vá (hoặc quét lỗi), không đẩy ảnh`); }
+      log(`Trivy: không có lỗ hổng CRITICAL đã có bản vá.`);
+    }
+    log(`Đẩy lên GHCR…`);
     await must(["docker", "push", ref], { onLine: (l) => { if (!/Waiting|Preparing|Layer already exists/.test(l)) log(l); } });
     j.tags[s.key] = tag;
   }
@@ -575,6 +650,7 @@ async function state() {
     },
     services,
     jobs: jobs.map(({ log, ...j }) => ({ ...j, lines: log.length })),
+    checks: checks.slice(0, 15).map(checkSummary),
   };
 }
 
@@ -667,6 +743,22 @@ const server = Bun.serve({
           const { log, ...rest } = j;
           return json({ ...rest, from, lines: log.slice(from), total: log.length });
         }
+        // Commit của nhánh/commit đang chọn và lượt kiểm tra mới nhất của nó
+        if (p === "/api/check") {
+          const ref = String(url.searchParams.get("ref") ?? "").trim();
+          if (!REF_OK.test(ref)) return json({ error: "Nhánh/commit không hợp lệ" }, 400);
+          const r = await resolveRef(ref);
+          if (!r) return json({ error: `Không thấy ${ref} trên GitHub` }, 404);
+          const c = checkOf(r.sha);
+          return json({ ref, ...r, check: c ? checkSummary(c) : null });
+        }
+        if (p === "/api/checkrun") {
+          const c = checks.find((x) => x.id === url.searchParams.get("id"));
+          if (!c) return json({ error: "Không có lượt kiểm tra" }, 404);
+          const from = Math.max(0, Number(url.searchParams.get("from") ?? 0) | 0);
+          const lines = checkLogLines(c);
+          return json({ ...checkSummary(c), from, lines: lines.slice(from, from + 5000), total: Math.min(lines.length, from + 5000) });
+        }
         if (p === "/api/tags") { if (!svc) return json({ error: "Service không hợp lệ" }, 400); return json(await listTags(svc.image)); }
         if (p === "/api/logs") {
           if (!svc) return json({ error: "Service không hợp lệ" }, 400);
@@ -685,8 +777,24 @@ const server = Bun.serve({
       if (req.method !== "POST") return json({ error: "Không hỗ trợ" }, 405);
       const body: any = await req.json().catch(() => ({}));
       const busyNow = busyJobs();
-      // Build/Deploy luôn chạy bằng mã trang mới nhất trên nhánh staging (biến build, danh sách service...)
-      if ((p === "/api/build" || p === "/api/deploy") && (await codeStale())) return json({ error: STALE_MSG }, 503);
+      // Kiểm tra/Build/Deploy luôn chạy bằng mã trang mới nhất của dmst-cicd (biến build, danh sách service, bước kiểm tra...)
+      if ((p === "/api/build" || p === "/api/deploy" || p === "/api/check") && (await codeStale())) return json({ error: STALE_MSG }, 503);
+
+      if (p === "/api/check") {
+        const ref = String(body.ref ?? BRANCH).trim();
+        if (!REF_OK.test(ref)) return json({ error: "Nhánh/commit không hợp lệ" }, 400);
+        await fetchRepo(true);
+        const r = await resolveRef(ref);
+        if (!r) return json({ error: `Không thấy ${ref} trên GitHub` }, 404);
+        const cur = checkOf(r.sha);
+        // Đang chạy/chờ hoặc đã đạt: dùng lại, không chạy trùng
+        if (cur && cur.status !== "failed") return json({ ok: true, id: cur.id, sha: r.sha, reused: true });
+        if (checks.filter((c) => c.status === "queued" || c.status === "running").length >= 3) return json({ error: "Đã có 3 lượt kiểm tra đang chờ, đợi bớt" }, 429);
+        const c = newCheck({ id: newId(), sha: r.sha, ref, subject: r.subject, user: who });
+        enqueueCheck(c);
+        console.log(`${c.created} [${who}] kiểm tra ${ref} @ ${r.sha.slice(0, 7)}`);
+        return json({ ok: true, id: c.id, sha: r.sha });
+      }
 
       if (p === "/api/build") {
         const ref = String(body.ref ?? BRANCH).trim();
@@ -694,7 +802,14 @@ const server = Bun.serve({
         const keys = (Array.isArray(body.services) ? body.services : []).filter((k: string) => SERVICES.some((s) => s.key === k));
         if (!keys.length) return json({ error: "Chọn ít nhất 1 service" }, 400);
         if (busyNow >= 5) return json({ error: "Hàng đợi đã có 5 việc, đợi bớt" }, 429);
-        const j: Job = { id: newId(), kind: "build", user: who, ref, services: keys, deploy: body.deploy !== false, status: "queued", created: new Date().toISOString(), tags: {}, log: [] };
+        // Chỉ Build commit đã qua kiểm tra. Trang gửi kèm sha đã kiểm; nhánh có commit mới hơn thì phải kiểm tra lại.
+        await fetchRepo(true);
+        const r = await resolveRef(ref);
+        if (!r) return json({ error: `Không thấy ${ref} trên GitHub` }, 404);
+        if (body.sha && !r.sha.startsWith(String(body.sha))) return json({ error: `${ref} vừa có commit mới (${r.sha.slice(0, 7)}), kiểm tra lại trước khi Build` }, 409);
+        const ck = checkOf(r.sha);
+        if (ck?.status !== "ok") return json({ error: `Commit ${r.sha.slice(0, 7)} chưa qua kiểm tra (CI). Bấm "Chạy kiểm tra" trước.` }, 409);
+        const j: Job = { id: newId(), kind: "build", user: who, ref, sha: r.sha, subject: r.subject, services: keys, deploy: body.deploy !== false, status: "queued", created: new Date().toISOString(), tags: {}, log: [] };
         enqueue(j, buildJob);
         console.log(`${j.created} [${who}] build ${ref} ${keys.join(",")}${j.deploy ? "" : " (chỉ build)"}`);
         return json({ ok: true, id: j.id });
