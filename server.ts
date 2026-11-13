@@ -42,6 +42,7 @@ const REG = "ghcr.io/khcn-thanh-hoa";
 const WEB_ARGS = {
   VITE_API_URL: E.STAGING_API_URL ?? "https://sangiaodich.dmst.vn/api",
   VITE_GOOGLE_CLIENT_ID: E.STAGING_GOOGLE_CLIENT_ID ?? "764794139184-sn5rdvuqkqevqtrupcl8kkm7p53h5d1g.apps.googleusercontent.com",
+  VITE_SELLER_CENTER_URL: E.STAGING_SELLER_CENTER_URL ?? "https://nguoiban-sangiaodich.dmst.vn",
   // "" đường dẫn; "{san}-sangiaodich.dmst.vn" tên miền con
   SAN_TEN_MIEN: E.STAGING_SAN_TEN_MIEN ?? "",
 };
