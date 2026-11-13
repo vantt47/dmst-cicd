@@ -6,6 +6,9 @@
 //   - hoặc Deploy một thẻ ảnh có sẵn trên GHCR (cũng là commit đổi newTag).
 // Tiến trình này tự chạy và giữ sống `kubectl proxy` (API cụm, chỉ 127.0.0.1) và `cloudflared` (tunnel ra domain).
 // Không có gói phụ thuộc, chỉ API có sẵn của Bun. Cài đặt/khởi động: xem start.ps1.
+// Mã của trang chạy thẳng từ repo: worktree WORK_DIR/tool theo origin/staging (start.ps1 cập nhật mỗi lần khởi động),
+// không có bản sao. Khi thư mục deploy/stg-deploy trên origin/staging khác mã đang chạy, trang tự thoát lúc rảnh
+// (hoặc ngay khi có người bấm Build/Deploy) để start.ps1 lấy mã mới và chạy lại. Sửa trang = commit + push nhánh staging.
 //
 // Thư mục làm việc WORK_DIR (mặc định D:/DMST/stg-deploy-work, ngoài repo):
 //   secrets.json   { DEPLOY_PASSWORD, SESSION_SECRET, TUNNEL_TOKEN }  (tạo lần đầu, chỉ user Windows đọc)
@@ -110,15 +113,23 @@ async function must(cmd: string[], o: RunOpts = {}) {
   return r.out;
 }
 
-// Giữ sống kubectl proxy và cloudflared, chạy lại sau 5 giây nếu thoát.
+// Giữ sống kubectl proxy và cloudflared, chạy lại sau 5 giây nếu thoát. Khi trang tự thoát để cập nhật mã thì dừng hẳn.
+const children = new Set<ReturnType<typeof Bun.spawn>>();
+let exiting = false;
 function keepAlive(name: string, cmd: () => string[] | null, env: Record<string, string> = {}) {
   const start = () => {
+    if (exiting) return;
     const c = cmd();
     if (!c) return console.log(`[${name}] bỏ qua (thiếu cấu hình)`);
     const p = Bun.spawn(c, { env: { ...E, ...env }, stdout: "ignore", stderr: "pipe" });
+    children.add(p);
     console.log(`[${name}] chạy pid ${p.pid}`);
     (async () => { let n = 0; for await (const ch of p.stderr) { if (n++ < 50) process.stdout.write(`[${name}] ${new TextDecoder().decode(ch)}`); } })();
-    p.exited.then((code) => { console.log(`[${name}] thoát mã ${code}, chạy lại sau 5 giây`); setTimeout(start, 5000); });
+    p.exited.then((code) => {
+      children.delete(p);
+      if (exiting) return;
+      console.log(`[${name}] thoát mã ${code}, chạy lại sau 5 giây`); setTimeout(start, 5000);
+    });
   };
   start();
 }
@@ -220,6 +231,38 @@ async function commitTags(changes: { svc: Service; tag: string }[], who: string,
   throw new Error("Không push được vào nhánh staging sau 3 lần");
 }
 
+// ---------------- Tự cập nhật mã của trang ----------------
+// So cây thư mục deploy/stg-deploy đang chạy (worktree WORK_DIR/tool) với origin/staging. Chạy ngoài git (thử trên máy dev)
+// thì RUNNING_TREE rỗng, không kiểm tra.
+const TOOL_PATH = "ecommerce-monorepo/deploy/stg-deploy";
+const RUNNING_TREE = (await run(["git", "-C", import.meta.dir, "rev-parse", "HEAD:./"], { quiet: true }).catch(() => ({ code: 1, out: "" })))
+  .out.trim();
+if (RUNNING_TREE) console.log(`Mã trang: cây ${RUNNING_TREE.slice(0, 10)} (${import.meta.dir})`);
+else console.log(`⚠ ${import.meta.dir} không nằm trong git, không tự cập nhật mã trang.`);
+let restartPending = false;
+const busyJobs = () => jobs.filter((j) => j.status === "queued" || j.status === "running").length;
+function exitForUpdate() {
+  if (exiting) return;
+  exiting = true;
+  console.log(`${new Date().toISOString()} origin/${BRANCH} có mã trang mới, thoát để start.ps1 cập nhật và chạy lại.`);
+  for (const p of children) { try { p.kill(); } catch {} }
+  setTimeout(() => process.exit(0), 1000);
+}
+// true: mã đang chạy đã cũ (đã hẹn thoát; có việc đang chạy thì thoát khi hàng đợi rỗng).
+async function codeStale(): Promise<boolean> {
+  if (restartPending) return true;
+  if (!RUNNING_TREE) return false;
+  await ensureRepo();
+  await fetchRepo();
+  const remote = (await run(["git", "-C", REPO, "rev-parse", `origin/${BRANCH}:${TOOL_PATH}`], { quiet: true })).out.trim();
+  if (!remote || remote === RUNNING_TREE) return false;
+  restartPending = true;
+  if (!busyJobs()) exitForUpdate();
+  else console.log(`${new Date().toISOString()} mã trang mới trên origin/${BRANCH}, chờ ${busyJobs()} việc xong rồi khởi động lại.`);
+  return true;
+}
+const STALE_MSG = "Trang stg-deploy vừa có mã mới trên nhánh staging, đang khởi động lại để dùng mã mới. Bấm lại sau khoảng 30 giây.";
+
 async function history() {
   await fetchRepo();
   const out = await git(["log", "-20", "--format=%H%x1f%cI%x1f%B%x1e", `origin/${BRANCH}`, "--", KPATH]);
@@ -264,6 +307,7 @@ function enqueue(j: Job, work: (j: Job, log: (l: string) => void) => Promise<voi
     catch (e: any) { j.status = "failed"; j.error = String(e?.message ?? e); log("✘ " + j.error); }
     j.ended = new Date().toISOString();
     console.log(`${j.ended} job ${j.id} ${j.kind} ${j.status} (${j.user})`);
+    if (restartPending && !busyJobs()) exitForUpdate(); // hàng đợi rỗng: chạy lại bằng mã mới
   });
 }
 // Xóa log job cũ trên đĩa
@@ -531,7 +575,9 @@ const server = Bun.serve({
       }
       if (req.method !== "POST") return json({ error: "Không hỗ trợ" }, 405);
       const body: any = await req.json().catch(() => ({}));
-      const busyNow = jobs.filter((j) => j.status === "queued" || j.status === "running").length;
+      const busyNow = busyJobs();
+      // Build/Deploy luôn chạy bằng mã trang mới nhất trên nhánh staging (biến build, danh sách service...)
+      if ((p === "/api/build" || p === "/api/deploy") && (await codeStale())) return json({ error: STALE_MSG }, 503);
 
       if (p === "/api/build") {
         const ref = String(body.ref ?? BRANCH).trim();
@@ -576,3 +622,5 @@ const server = Bun.serve({
 });
 console.log(`stg-deploy chạy http://127.0.0.1:${server.port} (WORK_DIR ${WORK})`);
 ensureRepo((l) => console.log(l)).catch((e) => console.error("Chuẩn bị repo lỗi:", e.message));
+// Kiểm tra mã trang mới mỗi 2 phút, khởi động lại lúc rảnh
+setInterval(() => { codeStale().catch((e) => console.error("Kiểm tra mã trang lỗi:", e.message)); }, 120_000);
