@@ -63,13 +63,15 @@ const GH_TOKEN = E.GITHUB_CLASSIC_TOKEN ?? ""; // chỉ để liệt kê thẻ �
 type Service = {
   key: string; label: string; note: string; image: string;
   ns: string; deploy: string; container?: string; init?: string;
+  // Deployment khác cùng namespace dùng chung ảnh (backend-worker): đổi thẻ là rollout cả nó, Restart cũng khởi động lại nó
+  also?: string[];
   // build: thư mục ngữ cảnh + Dockerfile (tương đối ecommerce-monorepo/), target, build-arg; tag theo commit
   build: { context: string; file: string; target?: string; args?: Record<string, string>; suffix: string };
 };
 const SERVICES: Service[] = [
-  { key: "backend", label: "Backend API", note: "api-sangiaodich.dmst.vn", image: `${REG}/tmdt-backend`, ns: "tmdt", deploy: "backend", container: "backend",
+  { key: "backend", label: "Backend API", note: "api-sangiaodich.dmst.vn", image: `${REG}/tmdt-backend`, ns: "tmdt", deploy: "backend", container: "backend", also: ["backend-worker"],
     build: { context: "backend", file: "backend/Dockerfile", target: "runtime", suffix: "" } },
-  { key: "migrate", label: "Migrate CSDL", note: "initContainer của backend: migrate + seed vùng trước khi backend chạy", image: `${REG}/tmdt-migrate`, ns: "tmdt", deploy: "backend", init: "migrate",
+  { key: "migrate", label: "Migrate CSDL", note: "initContainer của backend: migrate + seed vùng trước khi backend chạy", image: `${REG}/tmdt-migrate`, ns: "tmdt", deploy: "backend", init: "migrate", also: ["backend-worker"],
     build: { context: "backend", file: "backend/Dockerfile.migrate", suffix: "" } },
   { key: "web", label: "Web", note: "sangiaodich, nguoiban-, quantri-sangiaodich.dmst.vn", image: `${REG}/tmdt-web`, ns: "tmdt", deploy: "web", container: "web",
     build: { context: ".", file: "deploy/nginx/Dockerfile", target: "k8s", args: WEB_ARGS, suffix: "-staging" } },
@@ -320,7 +322,8 @@ async function deployJob(j: Job, log: (l: string) => void) {
 async function afterCommit(svcs: Service[], log: (l: string) => void) {
   log(`Yêu cầu Flux đồng bộ…`);
   await fluxReconcile();
-  const deploys = [...new Set(svcs.map((s) => `${s.ns}/${s.deploy}`))];
+  const deploysOf = (s: Service) => [s.deploy, ...(s.also ?? [])].map((d) => `${s.ns}/${d}`);
+  const deploys = [...new Set(svcs.flatMap(deploysOf))];
   const want = Object.fromEntries(svcs.map((s) => [s.key, null as string | null]));
   const deadline = Date.now() + 6 * 60_000;
   let lastMsg = "";
@@ -334,7 +337,7 @@ async function afterCommit(svcs: Service[], log: (l: string) => void) {
       if (!d) { done = false; continue; }
       const spec = d.spec.template.spec;
       const imgs = [...(spec.initContainers ?? []), ...spec.containers].map((c: any) => c.image as string);
-      const tagsOk = svcs.filter((s) => `${s.ns}/${s.deploy}` === key).every((s) => kt && imgs.includes(`${s.image}:${kt[s.key]}`));
+      const tagsOk = svcs.filter((s) => deploysOf(s).includes(key)).every((s) => kt && imgs.includes(`${s.image}:${kt[s.key]}`));
       const st = d.status ?? {};
       const ok = tagsOk && st.observedGeneration >= d.metadata.generation && st.updatedReplicas === d.spec.replicas && st.availableReplicas === d.spec.replicas && (st.replicas ?? 0) === d.spec.replicas;
       parts.push(`${name}: ${tagsOk ? "" : "chờ Flux áp thẻ mới, "}${st.updatedReplicas ?? 0}/${d.spec.replicas} cập nhật, ${st.availableReplicas ?? 0} sẵn sàng`);
@@ -553,11 +556,14 @@ const server = Bun.serve({
       }
       if (p === "/api/restart") {
         if (!s) return json({ error: "Service không hợp lệ" }, 400);
-        await k8s(`/apis/apps/v1/namespaces/${s.ns}/deployments/${s.deploy}`, {
-          method: "PATCH", contentType: "application/strategic-merge-patch+json",
-          body: JSON.stringify({ spec: { template: { metadata: { annotations: { "kubectl.kubernetes.io/restartedAt": new Date().toISOString() } } } } }),
-        });
-        console.log(`${new Date().toISOString()} [${who}] restart ${s.ns}/${s.deploy}`);
+        const at = new Date().toISOString();
+        for (const d of [s.deploy, ...(s.also ?? [])]) {
+          await k8s(`/apis/apps/v1/namespaces/${s.ns}/deployments/${d}`, {
+            method: "PATCH", contentType: "application/strategic-merge-patch+json",
+            body: JSON.stringify({ spec: { template: { metadata: { annotations: { "kubectl.kubernetes.io/restartedAt": at } } } } }),
+          }).catch((e) => { if (d === s.deploy) throw e; }); // Deployment phụ chưa có (chưa áp manifest) thì bỏ qua
+          console.log(`${at} [${who}] restart ${s.ns}/${d}`);
+        }
         return json({ ok: true });
       }
       if (p === "/api/reconcile") { await fluxReconcile(); return json({ ok: true }); }
