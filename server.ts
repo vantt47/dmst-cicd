@@ -11,7 +11,7 @@
 // (hoặc ngay khi có người bấm Build/Deploy) để start.ps1 lấy mã mới và chạy lại. Sửa trang = commit + push nhánh staging.
 //
 // Thư mục làm việc WORK_DIR (mặc định D:/DMST/stg-deploy-work, ngoài repo):
-//   secrets.json   { DEPLOY_PASSWORD, SESSION_SECRET, TUNNEL_TOKEN }  (tạo lần đầu, chỉ user Windows đọc)
+//   secrets.json   { DEPLOY_PASSWORD, SESSION_SECRET, TUNNEL_TOKEN, DNSO_API_KEY, DNSO_THAY_MAT, DNSO_NHOM_ID }  (chỉ user Windows đọc)
 //   repo/          clone riêng theo nhánh staging, dùng để commit đổi thẻ ảnh
 //   src/           worktree tách rời của repo/, checkout commit cần build
 //   jobs/<id>.log  log từng lần build
@@ -280,11 +280,104 @@ async function branches() {
   }).filter((b) => b.name !== "HEAD" && b.name !== "origin");
 }
 
+// ---------------- Báo nhóm Nhắn tin DNSO ----------------
+// Mỗi lượt triển khai (job có deploy) gửi đúng HAI lần, cùng duAn + moiTruong + phienBan: "running" khi bắt đầu, kết quả
+// cuối ("success"/"failure") khi rollout xong hoặc hỏng; máy chủ DNSO gộp thành một thẻ. Job chỉ build thì không báo.
+// Báo tin là việc phụ: lỗi chỉ ghi cảnh báo vào log job, không bao giờ làm hỏng job; lần đầu hỏng thì không gửi lần cuối.
+// Cấu hình: biến môi trường hoặc secrets.json trong WORK_DIR (DNSO_API_KEY, DNSO_THAY_MAT, DNSO_NHOM_ID). Không in khoá.
+// Cùng giao thức với deploy/scripts/bao-nhom.sh (chép từ kho DNSO, dùng cho GitHub Actions và thử tay `--ds-nhom`).
+const DNSO = {
+  url: (E.DNSO_URL ?? secrets.DNSO_URL ?? "https://dmst.dnso.vn").replace(/\/+$/, ""),
+  key: E.DNSO_API_KEY ?? secrets.DNSO_API_KEY ?? "",
+  thayMat: E.DNSO_THAY_MAT ?? secrets.DNSO_THAY_MAT ?? "",
+  nhom: E.DNSO_NHOM_ID ?? secrets.DNSO_NHOM_ID ?? "",
+  duAn: E.DNSO_DU_AN ?? "5-san-tmdt",
+  moiTruong: "staging",
+};
+type BaoTin = { phienBan: string; tu: string | null; den: string | null; gui: boolean };
+// Mã commit trong thẻ ảnh: stg-<sha7>-pc[-staging] (trang này), sha-<sha7>[-staging] (build-push.yml)
+const sha7OfTag = (tag?: string | null) => tag?.match(/^(?:stg|sha)-([0-9a-f]{7})(?:-|$)/)?.[1] ?? null;
+const resolveSha = async (rev: string | null) =>
+  rev ? (await run(["git", "-C", REPO, "rev-parse", "--verify", "-q", `${rev}^{commit}`])).out.trim() || null : null;
+const thoiLuong = (ms: number) => {
+  const s = Math.max(0, Math.round(ms / 1000)), m = Math.floor(s / 60);
+  return m ? `${m} phút ${s % 60} giây` : `${s} giây`;
+};
+
+async function dnsoPost(than: unknown, log: (l: string) => void): Promise<boolean> {
+  let cuoi = "";
+  for (let lan = 1; lan <= 3; lan++) {
+    let ma = 0, text = "";
+    try {
+      const r = await fetch(`${DNSO.url}/api/v1/nhan-tin/nhom/${encodeURIComponent(DNSO.nhom)}/thong-bao`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${DNSO.key}`, "X-Thay-Mat": DNSO.thayMat, "Content-Type": "application/json" },
+        body: JSON.stringify(than),
+        signal: AbortSignal.timeout(20_000),
+      });
+      ma = r.status; text = await r.text();
+    } catch (e: any) { text = String(e?.message ?? e); }
+    if (ma === 200 || ma === 201) { log(`Báo nhóm DNSO: HTTP ${ma}, đã đăng.`); return true; }
+    if (ma === 202) { log(`Báo nhóm DNSO: HTTP 202, ứng dụng ở mức "đề xuất", tin chờ người duyệt.`); return true; }
+    let loi = text.slice(0, 300);
+    try { loi = JSON.parse(text).loi ?? loi; } catch {}
+    cuoi = `HTTP ${ma || "lỗi mạng"}: ${loi}`;
+    if (ma >= 400 && ma < 500) break; // sai khoá/quyền/nhóm/thân: thử lại vô ích
+    if (lan < 3) await Bun.sleep(lan * 3000);
+  }
+  log(`⚠ Báo nhóm DNSO không thành công (${cuoi}), bỏ qua.`);
+  return false;
+}
+
+async function dnsoCommits(tu: string | null, den: string | null) {
+  if (!den) return {};
+  const range = tu ? [`${tu}..${den}`] : ["-1", den];
+  const out = (await run(["git", "-C", REPO, "log", "--no-merges", "-n", "50", "--format=%h%x1f%an%x1f%s", ...range])).out;
+  const commits = out.split("\n").filter(Boolean).map((l) => { const [ma, tacGia, tieuDe] = l.split("\x1f"); return { ma, tieuDe, tacGia }; });
+  const tong = tu ? Number((await run(["git", "-C", REPO, "rev-list", "--count", "--no-merges", `${tu}..${den}`])).out.trim()) || commits.length : commits.length;
+  return commits.length ? { commits, tongCommit: tong } : {};
+}
+
+function dnsoThan(j: Job, trangThai: string) {
+  const b = j.dnso!;
+  const repo = `https://github.com/${GH_ORG}/5-san-tmdt`;
+  return {
+    trangThai, duAn: DNSO.duAn, moiTruong: DNSO.moiTruong, phienBan: b.phienBan, tacGia: j.user,
+    lienKet: b.tu && b.den && b.tu !== b.den ? `${repo}/compare/${b.tu.slice(0, 12)}...${b.den.slice(0, 12)}` : b.den ? `${repo}/commit/${b.den}` : `https://${PUBLIC_HOST}/`,
+  };
+}
+
+// Gọi lúc bắt đầu lượt triển khai. sha: commit được triển khai (null nếu thẻ không mang mã commit); tag: dự phòng làm phienBan;
+// truocTag: thẻ đang chạy trên staging của service chính trước lượt này (để lấy danh sách commit mới).
+async function baoBatDau(j: Job, sha: string | null, tag: string, truocTag: string | null, log: (l: string) => void) {
+  try {
+    if (!j.deploy) return;
+    if (!DNSO.key || !DNSO.thayMat || !DNSO.nhom) { log("Báo nhóm DNSO: chưa cấu hình DNSO_API_KEY/DNSO_THAY_MAT/DNSO_NHOM_ID, bỏ qua."); return; }
+    const tu = await resolveSha(sha7OfTag(truocTag));
+    j.dnso = { phienBan: sha ? sha.slice(0, 7) : tag, tu, den: sha, gui: false };
+    j.dnso.gui = await dnsoPost({ ...dnsoThan(j, "running"), ...(await dnsoCommits(tu, sha)) }, log);
+  } catch (e: any) { log(`⚠ Báo nhóm DNSO lỗi: ${e?.message ?? e}`); }
+}
+async function baoKetThuc(j: Job, log: (l: string) => void) {
+  try {
+    const b = j.dnso;
+    if (!b?.gui) return;
+    const ok = j.status === "ok";
+    await dnsoPost({
+      ...dnsoThan(j, ok ? "success" : "failure"),
+      thoiLuong: thoiLuong(Date.parse(j.ended ?? new Date().toISOString()) - Date.parse(j.started!)),
+      ...(ok ? {} : { noiDung: (j.error ?? "Thất bại").slice(0, 600) }),
+      ...(await dnsoCommits(b.tu, b.den)),
+    }, log);
+  } catch (e: any) { log(`⚠ Báo nhóm DNSO lỗi: ${e?.message ?? e}`); }
+}
+
 // ---------------- Hàng đợi build ----------------
 type Job = {
   id: string; kind: "build" | "deploy"; user: string; ref: string; sha?: string; subject?: string;
   services: string[]; deploy: boolean; status: "queued" | "running" | "ok" | "failed";
   created: string; started?: string; ended?: string; tags: Record<string, string>; commit?: string | null; error?: string;
+  dnso?: BaoTin;
   log: string[];
 };
 const jobs: Job[] = [];
@@ -306,6 +399,7 @@ function enqueue(j: Job, work: (j: Job, log: (l: string) => void) => Promise<voi
     try { await work(j, log); j.status = "ok"; log("✔ Xong."); }
     catch (e: any) { j.status = "failed"; j.error = String(e?.message ?? e); log("✘ " + j.error); }
     j.ended = new Date().toISOString();
+    await baoKetThuc(j, log); // kết quả cuối vào nhóm DNSO (chỉ khi đã báo "running")
     console.log(`${j.ended} job ${j.id} ${j.kind} ${j.status} (${j.user})`);
     if (restartPending && !busyJobs()) exitForUpdate(); // hàng đợi rỗng: chạy lại bằng mã mới
   });
@@ -322,10 +416,12 @@ async function buildJob(j: Job, log: (l: string) => void) {
   j.sha = sha;
   j.subject = (await git(["log", "-1", "--format=%s", sha])).trim();
   log(`Commit ${sha.slice(0, 7)}: ${j.subject}`);
+  const svcs = SERVICES.filter((s) => j.services.includes(s.key));
+  // BẮT ĐẦU lượt triển khai (build + đổi thẻ + rollout): báo "running"; thẻ đang chạy của service đầu tiên là mốc commit cũ
+  await baoBatDau(j, sha, sha.slice(0, 7), (await gitTags().catch(() => ({} as Record<string, string | null>)))[svcs[0].key] ?? null, log);
   await git(["checkout", "-q", "--force", "--detach", sha], { cwd: SRC });
   await git(["clean", "-q", "-ffdx"], { cwd: SRC });
   const root = join(SRC, "ecommerce-monorepo");
-  const svcs = SERVICES.filter((s) => j.services.includes(s.key));
   for (const s of svcs) {
     const tag = tagFor(s, sha);
     const ref = `${s.image}:${tag}`;
@@ -356,6 +452,8 @@ async function deployJob(j: Job, log: (l: string) => void) {
   await ensureRepo(log);
   const s = SERVICES.find((x) => x.key === j.services[0])!;
   const tag = j.tags[s.key];
+  await fetchRepo(true);
+  await baoBatDau(j, await resolveSha(sha7OfTag(tag)), tag, (await gitTags().catch(() => ({} as Record<string, string | null>)))[s.key] ?? null, log);
   log(`Kiểm tra ${s.image}:${tag} trên GHCR…`);
   if (!(await tagExists(s.image, tag))) throw new Error(`Không có ${s.image}:${tag} trên GHCR`);
   j.commit = await commitTags([{ svc: s, tag }], j.user, `Deploy thẻ có sẵn.`, log);
