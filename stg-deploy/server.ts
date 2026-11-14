@@ -295,11 +295,12 @@ async function branches() {
 }
 
 // ---------------- Báo nhóm Nhắn tin DNSO ----------------
-// Mỗi lượt triển khai (job có deploy) gửi đúng HAI lần, cùng duAn + moiTruong + phienBan: "running" khi bắt đầu, kết quả
-// cuối ("success"/"failure") khi rollout xong hoặc hỏng; máy chủ DNSO gộp thành một thẻ. Job chỉ build thì không báo.
-// Báo tin là việc phụ: lỗi chỉ ghi cảnh báo vào log job, không bao giờ làm hỏng job; lần đầu hỏng thì không gửi lần cuối.
+// Mỗi lượt triển khai (job có deploy) gửi đúng MỘT tin kết quả khi xong ("Build thành công"/"Build thất bại"), viết cho
+// thành viên không làm kỹ thuật: tiêu đề nói rõ chuyện gì xảy ra, chỉ liệt kê thay đổi người dùng thấy được (feat/fix,
+// dịch sang tiếng Việt, không mã commit), liên kết mở thẳng trang staging. Không gửi "đang chạy": tin cập nhật lại
+// thẻ cũ sinh nhãn "đã cập nhật" và thêm nhiễu; tiến độ xem ở trang stg-deploy. Job chỉ build thì không báo.
+// Báo tin là việc phụ: lỗi chỉ ghi cảnh báo vào log job, không bao giờ làm hỏng job.
 // Cấu hình: biến môi trường hoặc secrets.json trong WORK_DIR (DNSO_API_KEY, DNSO_THAY_MAT, DNSO_NHOM_ID). Không in khoá.
-// Cùng giao thức với deploy/scripts/bao-nhom.sh (chép từ kho DNSO, dùng cho GitHub Actions và thử tay `--ds-nhom`).
 const DNSO = {
   url: (E.DNSO_URL ?? secrets.DNSO_URL ?? "https://dmst.dnso.vn").replace(/\/+$/, ""),
   key: E.DNSO_API_KEY ?? secrets.DNSO_API_KEY ?? "",
@@ -307,8 +308,10 @@ const DNSO = {
   nhom: E.DNSO_NHOM_ID ?? secrets.DNSO_NHOM_ID ?? "",
   duAn: E.DNSO_DU_AN ?? "5-san-tmdt",
   moiTruong: "staging",
+  // Trang mở khi bấm liên kết trên thẻ: trang người mua của staging.
+  trang: E.DNSO_TRANG ?? secrets.DNSO_TRANG ?? "https://sangiaodich.dmst.vn/",
 };
-type BaoTin = { phienBan: string; tu: string | null; den: string | null; gui: boolean };
+type BaoTin = { phienBan: string; tu: string | null; den: string | null };
 // Mã commit trong thẻ ảnh: stg-<sha7>-pc[-staging] (trang này), sha-<sha7>[-staging] (build-push.yml)
 const sha7OfTag = (tag?: string | null) => tag?.match(/^(?:stg|sha)-([0-9a-f]{7})(?:-|$)/)?.[1] ?? null;
 const resolveSha = async (rev: string | null) =>
@@ -343,44 +346,61 @@ async function dnsoPost(than: unknown, log: (l: string) => void): Promise<boolea
   return false;
 }
 
+// Tiêu đề commit → câu cho người không làm kỹ thuật. null = thay đổi kỹ thuật (test, ci, chore, refactor, docs, đổi thẻ
+// ảnh...), không đưa lên thẻ. Commit không theo quy ước "loại: ..." (thường viết tay bằng tiếng Việt) giữ nguyên.
+function dichCommit(tieuDe: string): string | null {
+  const t = tieuDe.trim();
+  if (/^(staging|production)\s*\(stg-deploy\)|^merge\b/i.test(t)) return null;
+  const m = t.match(/^(\w+)(?:\([^)]*\))?!?:\s*(.+)$/);
+  if (!m) return t;
+  const noi = m[2].charAt(0).toUpperCase() + m[2].slice(1);
+  const loai = m[1].toLowerCase();
+  if (loai === "feat") return `Mới: ${noi}`;
+  if (loai === "fix" || loai === "hotfix" || loai === "fixbug") return `Sửa lỗi: ${noi}`;
+  if (loai === "perf") return `Nhanh hơn: ${noi}`;
+  return null;
+}
+
 async function dnsoCommits(tu: string | null, den: string | null) {
   if (!den) return {};
   const range = tu ? [`${tu}..${den}`] : ["-1", den];
-  const out = (await run(["git", "-C", REPO, "log", "--no-merges", "-n", "50", "--format=%h%x1f%an%x1f%s", ...range])).out;
-  const commits = out.split("\n").filter(Boolean).map((l) => { const [ma, tacGia, tieuDe] = l.split("\x1f"); return { ma, tieuDe, tacGia }; });
-  const tong = tu ? Number((await run(["git", "-C", REPO, "rev-list", "--count", "--no-merges", `${tu}..${den}`])).out.trim()) || commits.length : commits.length;
-  return commits.length ? { commits, tongCommit: tong } : {};
+  const out = (await run(["git", "-C", REPO, "log", "--no-merges", "-n", "200", "--format=%an%x1f%s", ...range])).out;
+  const commits = out.split("\n").filter(Boolean)
+    .map((l) => { const [tacGia, s] = l.split("\x1f"); const tieuDe = dichCommit(s ?? ""); return tieuDe ? { ma: "", tieuDe, tacGia } : null; })
+    .filter((c): c is { ma: string; tieuDe: string; tacGia: string } => !!c);
+  // Bỏ dòng trùng (cùng một thay đổi commit nhiều lần)
+  const da = new Set<string>();
+  const gon = commits.filter((c) => !da.has(c.tieuDe) && !!da.add(c.tieuDe));
+  return gon.length ? { commits: gon.slice(0, 15), tongCommit: gon.length } : {};
 }
 
-function dnsoThan(j: Job, trangThai: string) {
-  const b = j.dnso!;
-  const repo = `https://github.com/${GH_ORG}/5-san-tmdt`;
-  return {
-    trangThai, duAn: DNSO.duAn, moiTruong: DNSO.moiTruong, phienBan: b.phienBan, tacGia: j.user,
-    lienKet: b.tu && b.den && b.tu !== b.den ? `${repo}/compare/${b.tu.slice(0, 12)}...${b.den.slice(0, 12)}` : b.den ? `${repo}/commit/${b.den}` : `https://${PUBLIC_HOST}/`,
-  };
-}
-
-// Gọi lúc bắt đầu lượt triển khai. sha: commit được triển khai (null nếu thẻ không mang mã commit); tag: dự phòng làm phienBan;
-// truocTag: thẻ đang chạy trên staging của service chính trước lượt này (để lấy danh sách commit mới).
+// Gọi lúc bắt đầu lượt triển khai: chỉ ghi lại dải commit để báo ở cuối. sha: commit được triển khai (null nếu thẻ không
+// mang mã commit); tag: dự phòng làm phienBan; truocTag: thẻ đang chạy trên staging trước lượt này (để lấy thay đổi mới).
 async function baoBatDau(j: Job, sha: string | null, tag: string, truocTag: string | null, log: (l: string) => void) {
   try {
     if (!j.deploy) return;
     if (!DNSO.key || !DNSO.thayMat || !DNSO.nhom) { log("Báo nhóm DNSO: chưa cấu hình DNSO_API_KEY/DNSO_THAY_MAT/DNSO_NHOM_ID, bỏ qua."); return; }
-    const tu = await resolveSha(sha7OfTag(truocTag));
-    j.dnso = { phienBan: sha ? sha.slice(0, 7) : tag, tu, den: sha, gui: false };
-    j.dnso.gui = await dnsoPost({ ...dnsoThan(j, "running"), ...(await dnsoCommits(tu, sha)) }, log);
+    j.dnso = { phienBan: sha ? sha.slice(0, 7) : tag, tu: await resolveSha(sha7OfTag(truocTag)), den: sha };
   } catch (e: any) { log(`⚠ Báo nhóm DNSO lỗi: ${e?.message ?? e}`); }
 }
 async function baoKetThuc(j: Job, log: (l: string) => void) {
   try {
     const b = j.dnso;
-    if (!b?.gui) return;
+    if (!b) return;
     const ok = j.status === "ok";
+    const tg = thoiLuong(Date.parse(j.ended ?? new Date().toISOString()) - Date.parse(j.started!));
+    const loi = (j.error ?? "Không rõ nguyên nhân").slice(0, 400);
     await dnsoPost({
-      ...dnsoThan(j, ok ? "success" : "failure"),
-      thoiLuong: thoiLuong(Date.parse(j.ended ?? new Date().toISOString()) - Date.parse(j.started!)),
-      ...(ok ? {} : { noiDung: (j.error ?? "Thất bại").slice(0, 600) }),
+      trangThai: ok ? "success" : "failure",
+      tieuDe: ok
+        ? "Build thành công: bản thử nghiệm đã cập nhật, mời mọi người vào kiểm tra"
+        : "Build thất bại: bản thử nghiệm vẫn chạy bản cũ, đội kỹ thuật đang xử lý",
+      tacGia: j.user,
+      thoiLuong: tg,
+      // Khoá gộp riêng theo commit: không gửi duAn/moiTruong/phienBan để thẻ khỏi dòng kỹ thuật "5-san-tmdt · staging · sha".
+      khoaGop: `${DNSO.duAn}|${DNSO.moiTruong}|${b.den ?? b.phienBan}|${j.id}`,
+      lienKet: DNSO.trang,
+      ...(ok ? {} : { noiDung: `Mọi người vẫn dùng bản cũ bình thường.\nChi tiết cho đội kỹ thuật (phiên bản ${b.phienBan}): ${loi}` }),
       ...(await dnsoCommits(b.tu, b.den)),
     }, log);
   } catch (e: any) { log(`⚠ Báo nhóm DNSO lỗi: ${e?.message ?? e}`); }
@@ -413,7 +433,7 @@ function enqueue(j: Job, work: (j: Job, log: (l: string) => void) => Promise<voi
     try { await work(j, log); j.status = "ok"; log("✔ Xong."); }
     catch (e: any) { j.status = "failed"; j.error = String(e?.message ?? e); log("✘ " + j.error); }
     j.ended = new Date().toISOString();
-    await baoKetThuc(j, log); // kết quả cuối vào nhóm DNSO (chỉ khi đã báo "running")
+    await baoKetThuc(j, log); // một tin kết quả vào nhóm DNSO (job có deploy)
     console.log(`${j.ended} job ${j.id} ${j.kind} ${j.status} (${j.user})`);
     if (restartPending && !busyJobs()) exitForUpdate(); // hàng đợi rỗng: chạy lại bằng mã mới
   });
