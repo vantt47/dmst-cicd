@@ -207,6 +207,7 @@ $("#b-ref").addEventListener("input", () => {
   clearTimeout(refTimer);
   refTimer = setTimeout(loadCheck, 500);
 });
+$("#b-bypass").addEventListener("change", () => renderCheck());
 $("#b-only").addEventListener("change", () => {
   $("#b-go").lastChild.textContent = $("#b-only").checked ? "Build" : "Build & deploy";
 });
@@ -235,8 +236,9 @@ function renderCheck() {
   const box = $("#b-ci"), go = $("#b-go");
   const c = CK && CK.check;
   const passed = !!(c && c.status === "ok");
-  go.disabled = !passed;
-  go.title = passed ? "" : "Commit phải qua kiểm tra (CI) trước khi Build";
+  const bypass = $("#b-bypass").checked;
+  go.disabled = !passed && !(bypass && CK);
+  go.title = passed ? "" : bypass ? "Bỏ qua chặn: build dù CI chưa đạt" : "Commit phải qua kiểm tra (CI) trước khi Build";
   if (!CK) {
     box.className = "ci";
     box.innerHTML = '<div class="ci-head"><span class="ci-msg muted">' + esc(ckErr || "Đang tải…") + "</span></div>";
@@ -299,16 +301,19 @@ $("#b-go").onclick = async () => {
   const ref = $("#b-ref").value.trim();
   const services = $$("#b-svcs input:checked").map((i) => i.value);
   const only = $("#b-only").checked;
+  const bypass = $("#b-bypass").checked;
   if (!ref) return toast("Nhập nhánh hoặc commit", true);
   if (!services.length) return toast("Chọn ít nhất 1 service", true);
-  if (!CK || !CK.check || CK.check.status !== "ok") return toast("Commit chưa qua kiểm tra (CI)", true);
+  if (!CK) return toast("Chưa đọc được commit", true);
+  if (!bypass && (!CK.check || CK.check.status !== "ok")) return toast("Commit chưa qua kiểm tra (CI)", true);
   const sha = CK.sha;
+  const passed = !!(CK.check && CK.check.status === "ok");
   const ok = await confirmBox(only ? "Build" : "Build & deploy",
-    "Build <b>" + esc(services.map(svcLabel).join(", ")) + "</b> từ <code>" + esc(ref) + "</code> @<code>" + esc(sha.slice(0, 7)) + "</code> (đã qua kiểm tra)" + (only ? ", chỉ đẩy ảnh lên GHCR." : " rồi triển khai lên staging."),
+    "Build <b>" + esc(services.map(svcLabel).join(", ")) + "</b> từ <code>" + esc(ref) + "</code> @<code>" + esc(sha.slice(0, 7)) + "</code>" + (passed ? " (đã qua kiểm tra)" : "") + (bypass ? ' <b style="color:#c0392b">BỎ QUA CHẶN: CI' + (passed ? "" : " chưa đạt") + ", Trivy chỉ cảnh báo</b>" : "") + (only ? ", chỉ đẩy ảnh lên GHCR." : " rồi triển khai lên staging."),
     only ? "Build" : "Build & deploy");
   if (!ok) return;
   $("#b-go").disabled = true;
-  try { const r = await api("/api/build", { ref, sha, services, deploy: !only }); await refresh(); showJob(r.id); }
+  try { const r = await api("/api/build", { ref, sha, services, deploy: !only, bypass }); await refresh(); showJob(r.id); }
   catch (e) { toast(e.message, true); loadCheck(); }
   renderCheck();
 };

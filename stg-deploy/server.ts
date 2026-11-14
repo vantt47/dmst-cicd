@@ -389,7 +389,7 @@ async function baoKetThuc(j: Job, log: (l: string) => void) {
 // ---------------- Hàng đợi build ----------------
 type Job = {
   id: string; kind: "build" | "deploy"; user: string; ref: string; sha?: string; subject?: string;
-  services: string[]; deploy: boolean; status: "queued" | "running" | "ok" | "failed";
+  services: string[]; deploy: boolean; bypass?: boolean; status: "queued" | "running" | "ok" | "failed";
   created: string; started?: string; ended?: string; tags: Record<string, string>; commit?: string | null; error?: string;
   dnso?: BaoTin;
   log: string[];
@@ -489,8 +489,9 @@ async function buildJob(j: Job, log: (l: string) => void) {
   const sha = j.sha ?? (await git(["rev-parse", "--verify", `${/^[0-9a-f]{7,40}$/.test(j.ref) ? j.ref : `origin/${j.ref}`}^{commit}`])).trim();
   j.sha = sha;
   const ck = checkOf(sha);
-  if (ck?.status !== "ok") throw new Error(`Commit ${sha.slice(0, 7)} chưa qua kiểm tra (CI)`);
-  log(`Kiểm tra (CI) đạt lúc ${ck.ended} (lượt ${ck.id}).`);
+  if (j.bypass) log(`⚠ BỎ QUA CHẶN (khẩn cấp, ${j.user}): CI ${ck?.status === "ok" ? "đã đạt" : "chưa đạt/chưa chạy"}, Trivy chỉ cảnh báo, không chặn.`);
+  else if (ck?.status !== "ok") throw new Error(`Commit ${sha.slice(0, 7)} chưa qua kiểm tra (CI)`);
+  if (ck?.status === "ok") log(`Kiểm tra (CI) đạt lúc ${ck.ended} (lượt ${ck.id}).`);
   j.subject = (await git(["log", "-1", "--format=%s", sha])).trim();
   log(`Commit ${sha.slice(0, 7)}: ${j.subject}`);
   const svcs = SERVICES.filter((s) => j.services.includes(s.key));
@@ -518,8 +519,9 @@ async function buildJob(j: Job, log: (l: string) => void) {
       log(`Quét lỗ hổng (Trivy, CRITICAL đã có bản vá)…`);
       const r = await run(["docker", "run", "--rm", "-v", "/var/run/docker.sock:/var/run/docker.sock", "-v", "trivy-cache:/root/.cache",
         TRIVY_IMAGE, "image", "--quiet", "--severity", "CRITICAL", "--ignore-unfixed", "--exit-code", "1", ref], { onLine: log });
-      if (r.code !== 0) { await run(["docker", "image", "rm", ref]); throw new Error(`Trivy: ${s.label} có lỗ hổng CRITICAL đã có bản vá (hoặc quét lỗi), không đẩy ảnh`); }
-      log(`Trivy: không có lỗ hổng CRITICAL đã có bản vá.`);
+      if (r.code !== 0 && j.bypass) log(`⚠ Trivy: ${s.label} có lỗ hổng CRITICAL đã có bản vá (hoặc quét lỗi), BỎ QUA CHẶN nên vẫn đẩy ảnh. Cần vá sớm.`);
+      else if (r.code !== 0) { await run(["docker", "image", "rm", ref]); throw new Error(`Trivy: ${s.label} có lỗ hổng CRITICAL đã có bản vá (hoặc quét lỗi), không đẩy ảnh`); }
+      else log(`Trivy: không có lỗ hổng CRITICAL đã có bản vá.`);
     }
     log(`Đẩy lên GHCR…`);
     await must(["docker", "push", ref], { onLine: (l) => { if (!/Waiting|Preparing|Layer already exists/.test(l)) log(l); } });
@@ -530,7 +532,7 @@ async function buildJob(j: Job, log: (l: string) => void) {
   await run(["docker", "image", "prune", "-f"]);
   if (!j.deploy) { log(`Chỉ build, không deploy. Thẻ: ${Object.values(j.tags).join(", ")}`); return; }
   log(``);
-  j.commit = await commitTags(svcs.map((s) => ({ svc: s, tag: j.tags[s.key] })), j.user, `Build từ ${j.ref} @ ${sha.slice(0, 7)} (${j.subject})`, log);
+  j.commit = await commitTags(svcs.map((s) => ({ svc: s, tag: j.tags[s.key] })), j.user, `Build từ ${j.ref} @ ${sha.slice(0, 7)} (${j.subject})${j.bypass ? " [bỏ qua chặn CI/Trivy]" : ""}`, log);
   await afterCommit(svcs, log);
 }
 
@@ -807,11 +809,12 @@ const server = Bun.serve({
         const r = await resolveRef(ref);
         if (!r) return json({ error: `Không thấy ${ref} trên GitHub` }, 404);
         if (body.sha && !r.sha.startsWith(String(body.sha))) return json({ error: `${ref} vừa có commit mới (${r.sha.slice(0, 7)}), kiểm tra lại trước khi Build` }, 409);
+        const bypass = body.bypass === true; // khẩn cấp: CI và Trivy chỉ cảnh báo, không chặn
         const ck = checkOf(r.sha);
-        if (ck?.status !== "ok") return json({ error: `Commit ${r.sha.slice(0, 7)} chưa qua kiểm tra (CI). Bấm "Chạy kiểm tra" trước.` }, 409);
-        const j: Job = { id: newId(), kind: "build", user: who, ref, sha: r.sha, subject: r.subject, services: keys, deploy: body.deploy !== false, status: "queued", created: new Date().toISOString(), tags: {}, log: [] };
+        if (!bypass && ck?.status !== "ok") return json({ error: `Commit ${r.sha.slice(0, 7)} chưa qua kiểm tra (CI). Bấm "Chạy kiểm tra" trước.` }, 409);
+        const j: Job = { id: newId(), kind: "build", user: who, ref, sha: r.sha, subject: r.subject, services: keys, deploy: body.deploy !== false, bypass, status: "queued", created: new Date().toISOString(), tags: {}, log: [] };
         enqueue(j, buildJob);
-        console.log(`${j.created} [${who}] build ${ref} ${keys.join(",")}${j.deploy ? "" : " (chỉ build)"}`);
+        console.log(`${j.created} [${who}] build ${ref} ${keys.join(",")}${j.deploy ? "" : " (chỉ build)"}${bypass ? " (BỎ QUA CHẶN)" : ""}`);
         return json({ ok: true, id: j.id });
       }
       const s = SERVICES.find((x) => x.key === body.svc);

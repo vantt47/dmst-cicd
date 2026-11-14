@@ -49,6 +49,7 @@ export function pageHtml(o: { user?: string; error?: string; name?: string }) {
         <div class="field"><span>Service</span><div class="chips" id="b-svcs"></div></div>
         <div class="build-foot">
           <label class="switch"><input type="checkbox" id="b-only"><span class="track"></span><span>Chỉ build, không deploy</span></label>
+          <label class="switch" title="Khẩn cấp: CI chưa đạt và Trivy có lỗ hổng vẫn build/deploy. Được ghi vào log và commit đổi thẻ."><input type="checkbox" id="b-bypass"><span class="track"></span><span>Bỏ qua chặn CI/Trivy (khẩn cấp)</span></label>
           <button class="btn btn-primary" id="b-go" disabled title="Commit phải qua kiểm tra (CI) trước"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>Build &amp; deploy</button>
         </div>
       </div>
