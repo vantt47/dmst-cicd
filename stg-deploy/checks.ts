@@ -59,6 +59,7 @@ export type CheckRun = {
   created: string; started?: string; ended?: string; error?: string;
   groups: { key: string; label: string; status: StepStatus; steps: { name: string; status: StepStatus; ms?: number }[] }[];
   log: string[];
+  auto?: boolean; superseded?: boolean; // auto: tự chạy khi có push; superseded: nhánh có commit mới trước khi tới lượt
 };
 export const newCheck = (o: { id: string; sha: string; ref: string; subject: string; user: string }): CheckRun => ({
   ...o, status: "queued", created: new Date().toISOString(), log: [],

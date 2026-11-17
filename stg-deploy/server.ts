@@ -471,6 +471,13 @@ function enqueueCheck(c: CheckRun) {
   checks.unshift(c);
   saveCheck(c);
   checkQueue = checkQueue.then(async () => {
+    // Lượt tự động bị thay bởi commit mới hơn của cùng nhánh khi còn đang chờ: bỏ hẳn, không chạy
+    if (c.superseded) {
+      checks.splice(checks.indexOf(c), 1);
+      rmSync(join(CHECK_DIR, `${c.id}.json`), { force: true });
+      if (restartPending && !busyJobs()) exitForUpdate();
+      return;
+    }
     const log = (l: string) => {
       const x = l.replace(/\x1b\[[0-9;]*m/g, "");
       c.log.push(x);
@@ -809,6 +816,7 @@ const server = Bun.serve({
         const r = await resolveRef(ref);
         if (!r) return json({ error: `Không thấy ${ref} trên GitHub` }, 404);
         const cur = checkOf(r.sha);
+        if (cur?.superseded) cur.superseded = false; // lượt tự động sắp bị bỏ: dev chủ động muốn kiểm tra commit này
         // Đang chạy/chờ hoặc đã đạt: dùng lại, không chạy trùng
         if (cur && cur.status !== "failed") return json({ ok: true, id: cur.id, sha: r.sha, reused: true });
         if (checks.filter((c) => c.status === "queued" || c.status === "running").length >= 3) return json({ error: "Đã có 3 lượt kiểm tra đang chờ, đợi bớt" }, 429);
@@ -871,3 +879,47 @@ console.log(`stg-deploy chạy http://127.0.0.1:${server.port} (WORK_DIR ${WORK}
 ensureRepo((l) => console.log(l)).catch((e) => console.error("Chuẩn bị repo lỗi:", e.message));
 // Kiểm tra mã trang mới mỗi 2 phút, khởi động lại lúc rảnh
 setInterval(() => { codeStale().catch((e) => console.error("Kiểm tra mã trang lỗi:", e.message)); }, 120_000);
+
+// ---------------- Tự chạy Kiểm tra (CI) khi có push ----------------
+// Mỗi AUTO_CHECK_SEC giây fetch repo ứng dụng; nhánh nào có commit đầu mới (push, tạo nhánh) thì xếp một lượt kiểm tra,
+// người chạy "Tự động (push)". Đầu nhánh đã thấy lưu ở WORK/auto-check.json để push lúc trang khởi động lại không bị sót;
+// lần đầu (chưa có tệp) chỉ ghi mốc, không kiểm tra hàng loạt. Nhánh có commit mới trong khi lượt tự động cũ còn chờ thì
+// bỏ lượt cũ. Commit đã có lượt kiểm tra (đang chờ/chạy/xong) thì không chạy lại. Tắt: AUTO_CHECK_SEC=0.
+const AUTO_CHECK_SEC = Number(E.AUTO_CHECK_SEC ?? 60);
+const AUTO_FILE = join(WORK, "auto-check.json");
+const AUTO_USER = "Tự động (push)";
+let autoHeads: Record<string, string> | null = null;
+try { autoHeads = JSON.parse(readFileSync(AUTO_FILE, "utf8")); } catch {}
+let autoBusy = false;
+async function autoCheck() {
+  if (autoBusy || exiting) return;
+  autoBusy = true;
+  try {
+    // Mã trang cũ: để lần chạy sau (mã mới) xếp kiểm tra, không ghi mốc
+    if (await codeStale()) return;
+    await ensureRepo();
+    await fetchRepo(true);
+    const out = await git(["for-each-ref", "--format=%(refname:short)%1f%(objectname)%1f%(subject)", "refs/remotes/origin"]);
+    const heads: Record<string, { sha: string; subject: string }> = {};
+    for (const l of out.trim().split("\n").filter(Boolean)) {
+      const [ref, sha, subject] = l.split("\x1f");
+      const name = ref.replace(/^origin\//, "");
+      if (name !== "HEAD" && name !== "origin" && REF_OK.test(name)) heads[name] = { sha, subject };
+    }
+    if (autoHeads) {
+      for (const [name, h] of Object.entries(heads)) {
+        if (autoHeads[name] === h.sha || checkOf(h.sha)) continue;
+        for (const old of checks) if (old.auto && old.ref === name && old.status === "queued") old.superseded = true;
+        const c = newCheck({ id: newId(), sha: h.sha, ref: name, subject: h.subject, user: AUTO_USER });
+        c.auto = true;
+        enqueueCheck(c);
+        console.log(`${c.created} [${AUTO_USER}] kiểm tra ${name} @ ${h.sha.slice(0, 7)}`);
+      }
+    } else console.log(`Tự kiểm tra khi push: ghi mốc ${Object.keys(heads).length} nhánh (lần đầu, không kiểm tra).`);
+    autoHeads = Object.fromEntries(Object.entries(heads).map(([n, h]) => [n, h.sha]));
+    writeFileSync(AUTO_FILE, JSON.stringify(autoHeads, null, 1));
+  } catch (e: any) {
+    console.error("Tự kiểm tra khi push lỗi:", e.message);
+  } finally { autoBusy = false; }
+}
+if (AUTO_CHECK_SEC > 0) { setTimeout(autoCheck, 10_000); setInterval(autoCheck, AUTO_CHECK_SEC * 1000); }

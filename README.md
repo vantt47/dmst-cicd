@@ -11,6 +11,9 @@ Trang build/deploy staging cho Sàn TMĐT: https://stg-deploy-sangiaodich.dmst.v
   (route-cu, quet-vitu; backend: tsc, OpenAPI, api-client, kiểm thử hợp đồng v1, jest; phone, manage, seller-center:
   tsc + build) trong container Docker dùng một lần ([stg-deploy/checks.ts](stg-deploy/checks.ts),
   [stg-deploy/ci/Dockerfile](stg-deploy/ci/Dockerfile)). Mã nạp bằng `git archive`, không chạm bí mật của PC.
+- Mỗi lần push (bất kỳ nhánh nào của 5-san-tmdt) trang tự chạy kiểm tra cho commit đầu nhánh, người chạy
+  "Tự động (push)". Trang dò GitHub mỗi 60 giây (`AUTO_CHECK_SEC`, 0 = tắt), mốc đầu nhánh lưu ở
+  `D:\DMST\stg-deploy-work\auto-check.json`. Push liên tiếp vào một nhánh thì chỉ commit mới nhất được kiểm tra.
 - Nút **Build** chỉ mở khi commit đang chọn đã qua kiểm tra (server cũng chặn). Build: PC build ảnh từ đúng commit đã
   kiểm, quét Trivy (backend, web: chặn lỗ hổng CRITICAL đã có bản vá), push GHCR, commit đổi `newTag` trong
   `ecommerce-monorepo/deploy/k8s/clusters/staging/kustomization.yaml` vào nhánh `staging`, rồi gọi Flux áp ngay.
