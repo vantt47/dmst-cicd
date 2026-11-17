@@ -2,6 +2,34 @@
 
 Công cụ CI/CD của các dự án DMST, tách khỏi repo ứng dụng.
 
+## dnso-stg
+
+Trang CI/CD staging cho DNSO (KHCN-Thanh-Hoa/doanhnghiepso): https://stg-deploy-dnso.senow.tech
+
+- Chạy trên PC quản trị (Windows, Bun, Docker Desktop, SSH tới `DMST_05` qua Tailscale, cloudflared), cổng 8097,
+  thư mục làm việc `D:\DMST\dnso-stg-work`, Scheduled Task `dnso-stg`. Độc lập với stg-deploy (chỉ dùng chung `app.css`).
+- **CI**: mỗi push vào `staging` hoặc `main` (`AUTO_CHECK_BRANCHES`) tự chạy Kiểm tra trong container dùng một lần
+  ([dnso-stg/kiem-tra.ts](dnso-stg/kiem-tra.ts)): `bun install`, dựng CSDL kiểm thử (Postgres phụ, `kiem-thu:csdl`),
+  `typecheck`, `kiem-thu:don-vi`, `kiem-thu:ten-mien`, `build`. Mã nạp bằng `git archive` cả kho, không chạm bí mật của PC.
+- **CD**: commit đầu `staging` qua kiểm tra thì tự Build & deploy (`AUTO_DEPLOY=0` để tắt): PC dựng ảnh `dnso-web`,
+  `dnso-worker` (thẻ = 8 ký tự sha) từ `git archive <sha>:app`, `docker save | ssh DMST_05 docker load`, chép
+  `trien-khai/` của chính commit đó vào `/opt/dnso-staging` (tệp `.env*` không nằm trong git nên không bị đè), rồi chạy
+  `trien-khai.sh <thẻ>`: migrate → dựng màu web đang tắt → chờ lành → dừng êm màu cũ → dựng lại worker. Sau đó kiểm
+  `/suc-khoe` qua cổng vào và dọn ảnh cũ (giữ `KEEP_TAGS` = 6 thẻ để quay lui).
+- **Đổi bản**: chạy lại một thẻ còn trên máy staging (quay lui, mặc định không migrate).
+- Báo nhóm Nhắn tin DNSO một tin kết quả mỗi lượt triển khai khi `secrets.json` có `DNSO_API_KEY`, `DNSO_THAY_MAT`,
+  `DNSO_NHOM_ID`.
+
+Cài (hoặc cài lại Scheduled Task):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File dnso-stg\start.ps1 -Install
+```
+
+Máy staging `DMST_05` (`/opt/dnso-staging`): bộ `trien-khai/` của kho DNSO với `COMPOSE_PROFILES=csdl-tu-chay,worker,cloudflare-tunnel`,
+Postgres 18 tự chạy (vai trò `postgres`/`erp`/`cds_app` như prod), Cloudflare Tunnel `dnso-staging` cho `dmst`, `az`,
+`nen-tang.senow.tech`. Mật khẩu vai trò CSDL ở `/opt/dnso-staging/.mat-khau-vai-tro`.
+
 ## stg-deploy
 
 Trang build/deploy staging cho Sàn TMĐT: https://stg-deploy-sangiaodich.dmst.vn

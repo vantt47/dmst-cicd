@@ -1,0 +1,8 @@
+/* Phần riêng của trang staging DNSO, nối sau app.css của stg-deploy. */
+.auto-note { font-size: 13px; color: var(--muted); margin: 0 0 12px; line-height: 1.5; }
+.auto-note code { font-size: 12px; }
+.panel-h .push-right { margin-left: auto; }
+a.flux-chip { text-decoration: none; color: inherit; }
+.may-head { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.may-head .subj { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.svc-meta .note { color: var(--muted); }
