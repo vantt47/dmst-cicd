@@ -28,7 +28,7 @@ powershell -ExecutionPolicy Bypass -File dnso-stg\start.ps1 -Install
 
 Máy staging `DMST_05` (`/opt/dnso-staging`): bộ `trien-khai/` của kho DNSO với `COMPOSE_PROFILES=csdl-tu-chay,worker,cloudflare-tunnel`,
 Postgres 18 tự chạy (vai trò `postgres`/`erp`/`cds_app` như prod), Cloudflare Tunnel `dnso-staging` cho `dmst`, `az`,
-`nen-tang.senow.tech`. Mật khẩu vai trò CSDL ở `/opt/dnso-staging/.mat-khau-vai-tro`.
+`nen-tang.senow.tech`. Miền staging chính: `stg-dmst-dnso.dmst.vn`, khai là tên miền riêng `hoat_dong` của doanh nghiệp `dmst` trong `platform.ten_mien_rieng` của CSDL staging. Mật khẩu vai trò CSDL ở `/opt/dnso-staging/.mat-khau-vai-tro`.
 
 ## stg-deploy
 

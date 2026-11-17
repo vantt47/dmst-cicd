@@ -49,7 +49,9 @@ const AUTO_DEPLOY = (E.AUTO_DEPLOY ?? "1") !== "0";
 const AUTO_CHECK_BRANCHES = (E.AUTO_CHECK_BRANCHES ?? `${DEPLOY_BRANCH},main`).split(",").map((s) => s.trim()).filter(Boolean);
 const SSH_HOST = E.SSH_HOST ?? "DMST_05"; // alias trong ~/.ssh/config của user Windows
 const REMOTE_DIR = E.REMOTE_DIR ?? "/opt/dnso-staging";
-const SITE = E.SITE ?? "https://dmst.senow.tech"; // trang mở khi bấm liên kết; cũng là host kiểm sức khoẻ sau triển khai
+// stg-dmst-dnso.dmst.vn là TÊN MIỀN RIÊNG (platform.ten_mien_rieng, hoat_dong) của doanh nghiệp dmst trên CSDL staging,
+// không phải <mã>.<MIEN_DOANH_NGHIEP>: miền một cấp dưới dmst.vn theo quy ước <vai>-<dự án>.dmst.vn.
+const SITE = E.SITE ?? "https://stg-dmst-dnso.dmst.vn"; // trang mở khi bấm liên kết; cũng là host kiểm sức khoẻ sau triển khai
 const SITE_HOST = new URL(SITE).host;
 const CLOUDFLARED = E.CLOUDFLARED ?? join(WORK, "bin", "cloudflared.exe");
 const PUBLIC_HOST = E.PUBLIC_HOST ?? "stg-deploy-dnso.senow.tech";
@@ -72,7 +74,7 @@ const SERVICES = [
   { key: "postgres", label: "PostgreSQL 18", note: "CSDL staging, vai trò erp / cds_app như prod", restart: false },
   { key: "redis", label: "Valkey", note: "hàng đợi BullMQ", restart: false },
   { key: "cong-vao", label: "Cổng vào (Caddy)", note: "cân tải hai màu web", restart: true },
-  { key: "cloudflared", label: "Cloudflare Tunnel", note: "dmst / az / nen-tang.senow.tech", restart: true },
+  { key: "cloudflared", label: "Cloudflare Tunnel", note: "stg-dmst-dnso.dmst.vn (+ dmst / az / nen-tang.senow.tech)", restart: true },
   { key: "autoheal", label: "Autoheal", note: "khởi động lại container unhealthy", restart: false },
 ];
 const tagFor = (sha: string) => sha.slice(0, 8);
