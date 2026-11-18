@@ -29,31 +29,45 @@ const STATIC: Record<string, [Buffer, string]> = {
   "/app.css": [asset("app.css"), "text/css; charset=utf-8"],
   "/app.js": [asset("app.js"), "text/javascript; charset=utf-8"],
   "/logo.svg": [asset("logo-thihub.svg"), "image/svg+xml"],
+  "/login.js": [asset("login.js"), "text/javascript; charset=utf-8"],
 };
 
 const E = process.env;
-const PORT = Number(E.PORT ?? 8099);
-const WORK = E.WORK_DIR ?? "D:/DMST/stg-deploy-work";
+// Hai bản chạy cùng mã: staging (mặc định, dev đăng nhập bằng mật khẩu chung) và production (DEPLOY_ENV=production,
+// https://prod-deploy-sangiaodich.dmst.vn, chỉ tài khoản Google trong ALLOWED_EMAILS, build từ nhánh main).
+const PROD = E.DEPLOY_ENV === "production";
+const ENV_NAME = PROD ? "production" : "staging";
+const PORT = Number(E.PORT ?? (PROD ? 8199 : 8099));
+const WORK = E.WORK_DIR ?? (PROD ? "D:/DMST/prod-deploy-work" : "D:/DMST/stg-deploy-work");
 const REPO_URL = E.REPO_URL ?? "git@github-tt47:KHCN-Thanh-Hoa/5-san-tmdt.git";
-const BRANCH = E.GITOPS_BRANCH ?? "staging";
-const KPATH = "ecommerce-monorepo/deploy/k8s/clusters/staging/kustomization.yaml";
-const KUBECONFIG = E.STG_KUBECONFIG ?? "C:/Users/Admin/.kube/tmdt-staging.yaml";
+const BRANCH = E.GITOPS_BRANCH ?? (PROD ? "main" : "staging");
+const KPATH = `ecommerce-monorepo/deploy/k8s/clusters/${ENV_NAME}/kustomization.yaml`;
+const KUBECONFIG = E.STG_KUBECONFIG ?? E.KUBECONFIG_FILE ?? `C:/Users/Admin/.kube/tmdt-${ENV_NAME}.yaml`;
 const CLOUDFLARED = E.CLOUDFLARED ?? join(WORK, "bin", "cloudflared.exe");
-const PUBLIC_HOST = E.PUBLIC_HOST ?? "stg-deploy-sangiaodich.dmst.vn";
-const PROXY_PORT = Number(E.KUBE_PROXY_PORT ?? 8098);
+const PUBLIC_HOST = E.PUBLIC_HOST ?? (PROD ? "prod-deploy-sangiaodich.dmst.vn" : "stg-deploy-sangiaodich.dmst.vn");
+const PROXY_PORT = Number(E.KUBE_PROXY_PORT ?? (PROD ? 8198 : 8098));
+// Production: đăng nhập Google (Google Identity Services, ID token kiểm qua tokeninfo), chỉ các email này
+const GOOGLE_CLIENT_ID = E.GOOGLE_CLIENT_ID ?? "764794139184-sn5rdvuqkqevqtrupcl8kkm7p53h5d1g.apps.googleusercontent.com";
+const ALLOWED_EMAILS = (E.ALLOWED_EMAILS ?? "vantt47@gmail.com").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+const TITLE = PROD ? "Production Deploy" : "Staging Deploy";
 const K8S = `http://127.0.0.1:${PROXY_PORT}`;
 const GH_ORG = "KHCN-Thanh-Hoa";
 const REG = "ghcr.io/khcn-thanh-hoa";
-// Biến build của ảnh web staging (trùng build-push.yml). Chế độ tên miền: ke-hoach-5-san/tich-hop-5-san/08-che-do-ten-mien-con-va-duong-dan.md
-const WEB_ARGS = {
+// Biến build của ảnh web (staging trùng build-push.yml). Chế độ tên miền: ke-hoach-5-san/tich-hop-5-san/08-che-do-ten-mien-con-va-duong-dan.md
+const WEB_ARGS = PROD ? {
+  VITE_API_URL: E.PRODUCTION_API_URL ?? "https://sangiaodich.thanhhoa.gov.vn/api",
+  VITE_GOOGLE_CLIENT_ID: E.PRODUCTION_GOOGLE_CLIENT_ID ?? "764794139184-sn5rdvuqkqevqtrupcl8kkm7p53h5d1g.apps.googleusercontent.com",
+  VITE_SELLER_CENTER_URL: E.PRODUCTION_SELLER_CENTER_URL ?? "https://nguoiban.sangiaodich.thanhhoa.gov.vn",
+  SAN_TEN_MIEN: E.PRODUCTION_SAN_TEN_MIEN ?? "",
+} : {
   VITE_API_URL: E.STAGING_API_URL ?? "https://sangiaodich.dmst.vn/api",
   VITE_GOOGLE_CLIENT_ID: E.STAGING_GOOGLE_CLIENT_ID ?? "764794139184-sn5rdvuqkqevqtrupcl8kkm7p53h5d1g.apps.googleusercontent.com",
   VITE_SELLER_CENTER_URL: E.STAGING_SELLER_CENTER_URL ?? "https://nguoiban-sangiaodich.dmst.vn",
   // "" đường dẫn; "{san}-sangiaodich.dmst.vn" tên miền con
   SAN_TEN_MIEN: E.STAGING_SAN_TEN_MIEN ?? "",
 };
-const FLUX_NS = "flux-system", FLUX_SOURCE = "tmdt", FLUX_KS = "staging";
-const SESSION_HOURS = 12, COOKIE = "stgdeploy";
+const FLUX_NS = "flux-system", FLUX_SOURCE = "tmdt", FLUX_KS = ENV_NAME;
+const SESSION_HOURS = PROD ? 8 : 12, COOKIE = PROD ? "proddeploy" : "stgdeploy";
 
 mkdirSync(join(WORK, "jobs"), { recursive: true });
 const SECRETS_FILE = join(WORK, "secrets.json");
@@ -77,17 +91,17 @@ type Service = {
 };
 const TRIVY_IMAGE = "aquasec/trivy:0.76.1"; // trùng build-push.yml
 const SERVICES: Service[] = [
-  { key: "backend", label: "Backend API", note: "api-sangiaodich.dmst.vn", image: `${REG}/tmdt-backend`, ns: "tmdt", deploy: "backend", container: "backend", also: ["backend-worker"],
+  { key: "backend", label: "Backend API", note: PROD ? "sangiaodich.thanhhoa.gov.vn/api" : "api-sangiaodich.dmst.vn", image: `${REG}/tmdt-backend`, ns: "tmdt", deploy: "backend", container: "backend", also: ["backend-worker"],
     build: { context: "backend", file: "backend/Dockerfile", target: "runtime", suffix: "", scan: true } },
   { key: "migrate", label: "Migrate CSDL", note: "initContainer của backend: migrate + seed vùng trước khi backend chạy", image: `${REG}/tmdt-migrate`, ns: "tmdt", deploy: "backend", init: "migrate", also: ["backend-worker"],
     build: { context: "backend", file: "backend/Dockerfile.migrate", suffix: "" } },
-  { key: "web", label: "Web", note: "sangiaodich, nguoiban-, quantri-sangiaodich.dmst.vn", image: `${REG}/tmdt-web`, ns: "tmdt", deploy: "web", container: "web",
-    build: { context: ".", file: "deploy/nginx/Dockerfile", target: "k8s", args: WEB_ARGS, suffix: "-staging", scan: true } },
+  { key: "web", label: "Web", note: PROD ? "sangiaodich, nguoiban., quantri.sangiaodich.thanhhoa.gov.vn" : "sangiaodich, nguoiban-, quantri-sangiaodich.dmst.vn", image: `${REG}/tmdt-web`, ns: "tmdt", deploy: "web", container: "web",
+    build: { context: ".", file: "deploy/nginx/Dockerfile", target: "k8s", args: WEB_ARGS, suffix: `-${ENV_NAME}`, scan: true } },
   { key: "ome-agent", label: "OME agent", note: "sidecar của ome-origin, ns tmdt-live", image: `${REG}/tmdt-ome-agent`, ns: "tmdt-live", deploy: "ome-origin", container: "agent",
     build: { context: "deploy/ome/agent", file: "deploy/ome/agent/Dockerfile", suffix: "" } },
 ];
 const VIEW_NS = [...new Set(SERVICES.map((s) => s.ns))];
-const tagFor = (s: Service, sha: string) => `stg-${sha.slice(0, 7)}-pc${s.build.suffix}`;
+const tagFor = (s: Service, sha: string) => `${PROD ? "prod" : "stg"}-${sha.slice(0, 7)}-pc${s.build.suffix}`;
 
 // ---------------- Tiến trình con ----------------
 type RunOpts = { cwd?: string; env?: Record<string, string>; onLine?: (l: string) => void; quiet?: boolean };
@@ -222,7 +236,7 @@ async function commitTags(changes: { svc: Service; tag: string }[], who: string,
     }
     if (!diffs.length) { log("Thẻ ảnh trong Git đã đúng, không cần commit."); return null; }
     writeFileSync(file, text);
-    const msg = `Staging (stg-deploy): ${diffs.join(", ")}\n\n${note}\nThực hiện bởi ${who} qua https://${PUBLIC_HOST}`;
+    const msg = `${PROD ? "Production (prod-deploy)" : "Staging (stg-deploy)"}: ${diffs.join(", ")}\n\n${note}\nThực hiện bởi ${who} qua https://${PUBLIC_HOST}`;
     await git(["commit", "-q", "-m", msg, "--", KPATH]);
     const r = await run(["git", "-C", REPO, "push", "origin", `HEAD:${BRANCH}`], { onLine: log });
     if (r.code === 0) {
@@ -307,13 +321,13 @@ const DNSO = {
   thayMat: E.DNSO_THAY_MAT ?? secrets.DNSO_THAY_MAT ?? "",
   nhom: E.DNSO_NHOM_ID ?? secrets.DNSO_NHOM_ID ?? "",
   duAn: E.DNSO_DU_AN ?? "5-san-tmdt",
-  moiTruong: "staging",
-  // Trang mở khi bấm liên kết trên thẻ: trang người mua của staging.
-  trang: E.DNSO_TRANG ?? secrets.DNSO_TRANG ?? "https://sangiaodich.dmst.vn/",
+  moiTruong: ENV_NAME,
+  // Trang mở khi bấm liên kết trên thẻ: trang người mua của môi trường này.
+  trang: E.DNSO_TRANG ?? secrets.DNSO_TRANG ?? (PROD ? "https://sangiaodich.thanhhoa.gov.vn/" : "https://sangiaodich.dmst.vn/"),
 };
 type BaoTin = { phienBan: string; tu: string | null; den: string | null };
-// Mã commit trong thẻ ảnh: stg-<sha7>-pc[-staging] (trang này), sha-<sha7>[-staging] (build-push.yml)
-const sha7OfTag = (tag?: string | null) => tag?.match(/^(?:stg|sha)-([0-9a-f]{7})(?:-|$)/)?.[1] ?? null;
+// Mã commit trong thẻ ảnh: stg|prod-<sha7>-pc[-staging|-production] (trang này), sha-<sha7>[-staging] (build-push.yml)
+const sha7OfTag = (tag?: string | null) => tag?.match(/^(?:stg|prod|sha)-([0-9a-f]{7})(?:-|$)/)?.[1] ?? null;
 const resolveSha = async (rev: string | null) =>
   rev ? (await run(["git", "-C", REPO, "rev-parse", "--verify", "-q", `${rev}^{commit}`])).out.trim() || null : null;
 const thoiLuong = (ms: number) => {
@@ -350,7 +364,7 @@ async function dnsoPost(than: unknown, log: (l: string) => void): Promise<boolea
 // ảnh...), không đưa lên thẻ. Commit không theo quy ước "loại: ..." (thường viết tay bằng tiếng Việt) giữ nguyên.
 function dichCommit(tieuDe: string): string | null {
   const t = tieuDe.trim();
-  if (/^(staging|production)\s*\(stg-deploy\)|^merge\b/i.test(t)) return null;
+  if (/^(staging|production)\s*\((stg|prod)-deploy\)|^merge\b/i.test(t)) return null;
   const m = t.match(/^(\w+)(?:\([^)]*\))?!?:\s*(.+)$/);
   if (!m) return t;
   const noi = m[2].charAt(0).toUpperCase() + m[2].slice(1);
@@ -392,9 +406,11 @@ async function baoKetThuc(j: Job, log: (l: string) => void) {
     const loi = (j.error ?? "Không rõ nguyên nhân").slice(0, 400);
     await dnsoPost({
       trangThai: ok ? "success" : "failure",
-      tieuDe: ok
-        ? "Build thành công: bản thử nghiệm đã cập nhật, mời mọi người vào kiểm tra"
-        : "Build thất bại: bản thử nghiệm vẫn chạy bản cũ, đội kỹ thuật đang xử lý",
+      tieuDe: PROD
+        ? (ok ? "Đã cập nhật bản chính thức sangiaodich.thanhhoa.gov.vn"
+              : "Cập nhật bản chính thức không thành công: trang vẫn chạy bản cũ, đội kỹ thuật đang xử lý")
+        : (ok ? "Build thành công: bản thử nghiệm đã cập nhật, mời mọi người vào kiểm tra"
+              : "Build thất bại: bản thử nghiệm vẫn chạy bản cũ, đội kỹ thuật đang xử lý"),
       tacGia: j.user,
       thoiLuong: tg,
       // Khoá gộp riêng theo commit: không gửi duAn/moiTruong/phienBan để thẻ khỏi dòng kỹ thuật "5-san-tmdt · staging · sha".
@@ -711,8 +727,27 @@ const SEC = {
   "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
   "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store",
 };
+// Trang đăng nhập production nạp nút Google (GIS): mở CSP đúng các đường dẫn GIS cần; GIS kiểm origin qua Referer nên
+// không dùng no-referrer ở trang này.
+const SEC_GIS = {
+  ...SEC,
+  "Content-Security-Policy": "default-src 'self'; img-src 'self' data: https://*.googleusercontent.com; style-src 'self' https://accounts.google.com/gsi/style; script-src 'self' https://accounts.google.com/gsi/client; frame-src https://accounts.google.com/gsi/; connect-src 'self' https://accounts.google.com/gsi/; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+};
 const json = (d: unknown, status = 200) => new Response(JSON.stringify(d), { status, headers: { ...SEC, "Content-Type": "application/json; charset=utf-8" } });
-const html = (b: string, status = 200) => new Response(b, { status, headers: { ...SEC, "Content-Type": "text/html; charset=utf-8" } });
+const html = (b: string, status = 200, gis = false) => new Response(b, { status, headers: { ...(gis ? SEC_GIS : SEC), "Content-Type": "text/html; charset=utf-8" } });
+// ID token Google → email đã xác minh, hoặc null. tokeninfo của Google kiểm chữ ký, hạn; ở đây kiểm aud, iss, email.
+async function googleEmail(credential: string): Promise<string | null> {
+  if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(credential) || credential.length > 4096) return null;
+  const r = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`, { signal: AbortSignal.timeout(10_000) });
+  if (!r.ok) return null;
+  const t: any = await r.json();
+  if (t.aud !== GOOGLE_CLIENT_ID) return null;
+  if (t.iss !== "accounts.google.com" && t.iss !== "https://accounts.google.com") return null;
+  if (t.email_verified !== "true" && t.email_verified !== true) return null;
+  if (!(Number(t.exp) * 1000 > Date.now())) return null;
+  return typeof t.email === "string" ? t.email.toLowerCase() : null;
+}
 const redirect = (to: string, extra: Record<string, string> = {}) => new Response(null, { status: 303, headers: { ...SEC, Location: to, ...extra } });
 const cookie = (v: string, maxAge: number) => `${COOKIE}=${v}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`;
 const TAG_OK = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
@@ -734,7 +769,29 @@ const server = Bun.serve({
     const st = STATIC[p];
     if (st) return new Response(st[0], { headers: { "Content-Type": st[1], "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff" } });
 
+    if (p === "/login/google" && req.method === "POST") {
+      if (!PROD) return json({ error: "Không hỗ trợ" }, 404);
+      if (!sameOrigin(req)) return json({ error: "Origin không hợp lệ" }, 403);
+      const ip = clientIp(req, srv);
+      const f = fails.get(ip);
+      if (f && f.n >= 8 && f.until > Date.now()) return json({ error: "Sai quá nhiều lần, thử lại sau 15 phút." }, 429);
+      const body: any = await req.json().catch(() => ({}));
+      const email = await googleEmail(String(body.credential ?? "")).catch(() => null);
+      if (!email || !ALLOWED_EMAILS.includes(email)) {
+        const cur = f && f.until > Date.now() ? f : { n: 0, until: Date.now() + 15 * 60_000 };
+        cur.n++; fails.set(ip, cur);
+        console.log(`${new Date().toISOString()} đăng nhập Google BỊ TỪ CHỐI ${email ?? "(token không hợp lệ)"} từ ${ip}`);
+        return json({ error: email ? `Tài khoản ${email} không có quyền build production.` : "Đăng nhập Google không hợp lệ." }, 403);
+      }
+      fails.delete(ip);
+      console.log(`${new Date().toISOString()} đăng nhập Google ${email} từ ${ip}`);
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { ...SEC, "Content-Type": "application/json; charset=utf-8", "Set-Cookie": cookie(makeSession(email), SESSION_HOURS * 3600) },
+      });
+    }
     if (p === "/login" && req.method === "POST") {
+      if (PROD) return html(pageHtml({ prod: true, clientId: GOOGLE_CLIENT_ID, error: "Production chỉ đăng nhập bằng Google." }), 403, true);
       const ip = clientIp(req, srv);
       const f = fails.get(ip);
       if (f && f.n >= 8 && f.until > Date.now()) return html(pageHtml({ error: "Sai quá nhiều lần, thử lại sau 15 phút." }), 429);
@@ -753,8 +810,11 @@ const server = Bun.serve({
     }
     if (p === "/logout" && req.method === "POST") return redirect("/", { "Set-Cookie": cookie("", 0) });
 
-    const who = readSession(req);
-    if (p === "/") return html(pageHtml(who ? { user: who } : {}));
+    let who = readSession(req);
+    // Production: phiên chỉ hợp lệ khi email vẫn nằm trong ALLOWED_EMAILS (gỡ quyền có hiệu lực ngay)
+    if (PROD && who && !ALLOWED_EMAILS.includes(who)) who = null;
+    const env = { prod: PROD, title: TITLE, branch: BRANCH, clientId: GOOGLE_CLIENT_ID };
+    if (p === "/") return html(pageHtml(who ? { ...env, user: who } : env), 200, PROD && !who);
     if (!p.startsWith("/api/")) return new Response("Không tìm thấy", { status: 404 });
     if (!who) return json({ error: "Chưa đăng nhập" }, 401);
     if (req.method === "POST" && !sameOrigin(req)) return json({ error: "Origin không hợp lệ" }, 403);
@@ -837,6 +897,9 @@ const server = Bun.serve({
         const r = await resolveRef(ref);
         if (!r) return json({ error: `Không thấy ${ref} trên GitHub` }, 404);
         if (body.sha && !r.sha.startsWith(String(body.sha))) return json({ error: `${ref} vừa có commit mới (${r.sha.slice(0, 7)}), kiểm tra lại trước khi Build` }, 409);
+        // Production chỉ build mã đã vào main (qua PR); nhánh khác phải merge vào main trước
+        if (PROD && (await run(["git", "-C", REPO, "merge-base", "--is-ancestor", r.sha, `origin/${BRANCH}`])).code !== 0)
+          return json({ error: `Commit ${r.sha.slice(0, 7)} chưa nằm trên nhánh ${BRANCH}. Production chỉ build mã đã merge vào ${BRANCH}.` }, 409);
         const bypass = body.bypass === true; // khẩn cấp: CI và Trivy chỉ cảnh báo, không chặn
         const ck = checkOf(r.sha);
         if (!bypass && ck?.status !== "ok") return json({ error: `Commit ${r.sha.slice(0, 7)} chưa qua kiểm tra (CI). Bấm "Chạy kiểm tra" trước.` }, 409);
@@ -875,7 +938,7 @@ const server = Bun.serve({
     }
   },
 });
-console.log(`stg-deploy chạy http://127.0.0.1:${server.port} (WORK_DIR ${WORK})`);
+console.log(`${PROD ? "prod" : "stg"}-deploy (${ENV_NAME}, nhánh ${BRANCH}) chạy http://127.0.0.1:${server.port} (WORK_DIR ${WORK})`);
 ensureRepo((l) => console.log(l)).catch((e) => console.error("Chuẩn bị repo lỗi:", e.message));
 // Kiểm tra mã trang mới mỗi 2 phút, khởi động lại lúc rảnh
 setInterval(() => { codeStale().catch((e) => console.error("Kiểm tra mã trang lỗi:", e.message)); }, 120_000);
@@ -904,6 +967,7 @@ async function autoCheck() {
     for (const l of out.trim().split("\n").filter(Boolean)) {
       const [ref, sha, subject] = l.split("\x1f");
       const name = ref.replace(/^origin\//, "");
+      if (PROD && name !== BRANCH) continue; // production: chỉ tự kiểm tra main (các nhánh khác đã có bản staging kiểm)
       if (name !== "HEAD" && name !== "origin" && REF_OK.test(name)) heads[name] = { sha, subject };
     }
     if (autoHeads) {

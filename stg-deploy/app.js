@@ -1,5 +1,6 @@
 "use strict";
-// Trang Staging Deploy · THiHUB (không framework).
+// Trang Staging/Production Deploy · THiHUB (không framework).
+const ENV = document.body.dataset.env || "staging";
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -172,7 +173,7 @@ async function loadHistory() {
     const h = await api("/api/history");
     $("#tab-hist").innerHTML = h.map((c) => {
       const lines = c.message.split("\n").map((x) => x.trim()).filter(Boolean);
-      const title = lines[0].replace(/^Staging( \(stg-deploy\))?:\s*/i, "");
+      const title = lines[0].replace(/^(Staging|Production)( \((stg|prod)-deploy\))?:\s*/i, "");
       const by = (lines.find((l) => l.startsWith("Thực hiện bởi")) || "").replace(/^Thực hiện bởi (.+?) qua .*/, "$1");
       return '<a class="hist" href="' + esc(c.url) + '" target="_blank" rel="noopener"><div class="hist-t">' + esc(title) + "</div>"
         + '<div class="hist-s"><span class="mono">' + esc(c.sha) + "</span> · " + (by ? esc(by) + " · " : "") + ago(c.date) + "</div></a>";
@@ -309,7 +310,7 @@ $("#b-go").onclick = async () => {
   const sha = CK.sha;
   const passed = !!(CK.check && CK.check.status === "ok");
   const ok = await confirmBox(only ? "Build" : "Build & deploy",
-    "Build <b>" + esc(services.map(svcLabel).join(", ")) + "</b> từ <code>" + esc(ref) + "</code> @<code>" + esc(sha.slice(0, 7)) + "</code>" + (passed ? " (đã qua kiểm tra)" : "") + (bypass ? ' <b style="color:#c0392b">BỎ QUA CHẶN: CI' + (passed ? "" : " chưa đạt") + ", Trivy chỉ cảnh báo</b>" : "") + (only ? ", chỉ đẩy ảnh lên GHCR." : " rồi triển khai lên staging."),
+    "Build <b>" + esc(services.map(svcLabel).join(", ")) + "</b> từ <code>" + esc(ref) + "</code> @<code>" + esc(sha.slice(0, 7)) + "</code>" + (passed ? " (đã qua kiểm tra)" : "") + (bypass ? ' <b style="color:#c0392b">BỎ QUA CHẶN: CI' + (passed ? "" : " chưa đạt") + ", Trivy chỉ cảnh báo</b>" : "") + (only ? ", chỉ đẩy ảnh lên GHCR." : " rồi triển khai lên " + ENV + "."),
     only ? "Build" : "Build & deploy");
   if (!ok) return;
   $("#b-go").disabled = true;
@@ -409,7 +410,7 @@ async function pickTag(key) {
   try { tags = await api("/api/tags?svc=" + encodeURIComponent(key)); draw(); }
   catch (e) { $("#tg-list").innerHTML = '<div class="empty">' + esc(e.message) + "</div>"; }
   go.onclick = async () => {
-    const ok = await confirmBox("Deploy " + s.label, "Đổi <b>" + esc(s.label) + "</b> từ <code>" + esc(s.specTag) + "</code> sang <code>" + esc(sel) + "</code> trên staging?", "Deploy");
+    const ok = await confirmBox("Deploy " + s.label, "Đổi <b>" + esc(s.label) + "</b> từ <code>" + esc(s.specTag) + "</code> sang <code>" + esc(sel) + "</code> trên " + ENV + "?", "Deploy");
     if (!ok) return;
     try { const r = await api("/api/deploy", { svc: key, tag: sel }); await refresh(); showJob(r.id); }
     catch (e) { toast(e.message, true); }

@@ -17,9 +17,18 @@
 # Tailscale, cloudflared.exe trong D:\DMST\stg-deploy-work\bin. Token tunnel nằm trong secrets.json (TUNNEL_TOKEN,
 # tunnel stg-deploy-pc trên account dmst.vn). PC phải luôn bật, không ngủ (Settings > Power: Sleep = Never), Docker
 # Desktop tự chạy khi đăng nhập.
-param([switch]$Install)
+#
+# Bản production (prod-deploy-sangiaodich.dmst.vn, đăng nhập Google, chỉ ALLOWED_EMAILS, build nhánh main):
+#   powershell -ExecutionPolicy Bypass -File stg-deploy\start.ps1 -Install -DeployEnv production
+#   -> task "prod-deploy", WORK D:\DMST\prod-deploy-work, cổng 8199 (kubectl proxy 8198, kubeconfig tmdt-production.yaml).
+#   Không chạy cloudflared riêng: tunnel stg-deploy-pc (cloudflared của bản staging) chuyển prod-deploy-... tới 127.0.0.1:8199.
+param([switch]$Install, [ValidateSet("staging", "production")][string]$DeployEnv = "staging")
 $ErrorActionPreference = "Stop"
-$Work = "D:\DMST\stg-deploy-work"
+$Prod = $DeployEnv -eq "production"
+$Name = if ($Prod) { "prod-deploy" } else { "stg-deploy" }
+$Work = if ($Prod) { "D:\DMST\prod-deploy-work" } else { "D:\DMST\stg-deploy-work" }
+$Ports = if ($Prod) { 8199, 8198 } else { 8099, 8098 }
+$env:DEPLOY_ENV = $DeployEnv
 $Tool = Join-Path $Work "cicd"
 $Branch = "main"
 $RepoUrl = "git@github-tt47:vantt47/dmst-cicd.git"
@@ -43,7 +52,7 @@ function Update-Tool {
 
 # Dừng tiến trình còn sót của lần chạy trước (bun server, kubectl proxy, cloudflared)
 function Stop-Leftovers {
-  Get-NetTCPConnection -LocalPort 8099, 8098 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+  Get-NetTCPConnection -LocalPort $Ports -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
   Get-Process cloudflared -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$Work*" } | Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
@@ -51,11 +60,11 @@ if ($Install) {
   New-Item -ItemType Directory -Force $Work | Out-Null
   Update-Tool
   $self = Join-Path $AppDir "start.ps1"
-  $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$self`""
+  $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$self`" -DeployEnv $DeployEnv"
   $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
   $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-  Register-ScheduledTask -TaskName "stg-deploy" -Action $action -Trigger $trigger -Settings $settings -Description "Trang build/deploy staging Sàn TMĐT (stg-deploy-sangiaodich.dmst.vn), mã chạy từ $AppDir (repo dmst-cicd)" -Force | Out-Null
-  Stop-ScheduledTask -TaskName "stg-deploy" -ErrorAction SilentlyContinue
+  Register-ScheduledTask -TaskName $Name -Action $action -Trigger $trigger -Settings $settings -Description "Trang build/deploy $DeployEnv Sàn TMĐT ($Name-sangiaodich.dmst.vn), mã chạy từ $AppDir (repo dmst-cicd)" -Force | Out-Null
+  Stop-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
   Stop-Leftovers
   # Chỗ chạy cũ: WORK\app (bản sao, trước 13/11/2026) và WORK\tool (worktree monorepo, trước khi tách sang dmst-cicd)
   $old = Join-Path $Work "app"
@@ -67,8 +76,8 @@ if ($Install) {
     if (Test-Path $oldTool) { Remove-Item -Recurse -Force $oldTool }
     if (Test-Path (Join-Path $repo ".git")) { git -C $repo worktree prune }
   }
-  Start-ScheduledTask -TaskName "stg-deploy"
-  Write-Host "Đã cài và khởi động task stg-deploy (mã: $AppDir). Log: $log"
+  Start-ScheduledTask -TaskName $Name
+  Write-Host "Đã cài và khởi động task $Name (mã: $AppDir). Log: $log"
   exit 0
 }
 
@@ -83,15 +92,15 @@ while ($true) {
   # Chính tệp này vừa đổi: chạy tệp mới thay cho vòng lặp cũ
   if ((Test-Path $PSCommandPath) -and (Get-FileHash $PSCommandPath).Hash -ne $selfHash) {
     Log "start.ps1 có bản mới, chạy lại start.ps1"
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -DeployEnv $DeployEnv
     exit $LASTEXITCODE
   }
   Stop-Leftovers
-  Log "khởi động stg-deploy"
+  Log "khởi động $Name"
   $p = Start-Process -FilePath $bun -ArgumentList "server.ts" -WorkingDirectory $AppDir -NoNewWindow -PassThru `
     -RedirectStandardOutput "$Work\server.out.log" -RedirectStandardError "$Work\server.err.log"
   $p.WaitForExit()
   foreach ($f in "$Work\server.out.log", "$Work\server.err.log") { if (Test-Path $f) { Get-Content -Encoding utf8 $f | Add-Content -Encoding utf8 $log } }
-  Log "stg-deploy thoát mã $($p.ExitCode), chạy lại sau 5 giây"
+  Log "$Name thoát mã $($p.ExitCode), chạy lại sau 5 giây"
   Start-Sleep -Seconds 5
 }

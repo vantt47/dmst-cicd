@@ -1,16 +1,37 @@
-// Khung HTML trang deploy staging. CSS, JS, logo là tệp riêng cùng thư mục (app.css, app.js, logo-thihub.svg).
+// Khung HTML trang deploy (staging hoặc production). CSS, JS, logo là tệp riêng cùng thư mục (app.css, app.js, login.js,
+// logo-thihub.svg). Production đăng nhập bằng nút Google (GIS), staging bằng tên + mật khẩu chung.
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
-const HEAD = `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Staging Deploy · THiHUB</title><link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/app.css"><meta name="robots" content="noindex,nofollow"></head>`;
+type Page = { user?: string; error?: string; name?: string; prod?: boolean; title?: string; branch?: string; clientId?: string };
 
-export function pageHtml(o: { user?: string; error?: string; name?: string }) {
+const head = (title: string, gis = false) => `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(title)} · THiHUB</title><link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/app.css"><meta name="robots" content="noindex,nofollow">${gis ? `
+<script src="https://accounts.google.com/gsi/client" async></script><script src="/login.js" defer></script>` : ""}</head>`;
+
+export function pageHtml(o: Page) {
+  const prod = !!o.prod;
+  const title = o.title ?? (prod ? "Production Deploy" : "Staging Deploy");
+  const envName = prod ? "production" : "staging";
   if (!o.user) {
-    return `${HEAD}<body class="login-page">
+    if (prod) {
+      return `${head(title, true)}<body class="login-page">
+<main class="login">
+  <img class="login-logo" src="/logo.svg" alt="THiHUB">
+  <div class="login-card">
+    <h1>${esc(title)}</h1>
+    <p class="muted">Build và triển khai lên production (sangiaodich.thanhhoa.gov.vn). Chỉ tài khoản super admin.</p>
+    <div class="alert alert-bad" id="login-err"${o.error ? "" : " hidden"}>${esc(o.error ?? "")}</div>
+    <div id="g_id_onload" data-client_id="${esc(o.clientId ?? "")}" data-callback="dangNhapGoogle" data-auto_prompt="false" data-ux_mode="popup"></div>
+    <div class="g_id_signin" data-type="standard" data-theme="outline" data-size="large" data-text="signin_with" data-shape="rectangular" data-logo_alignment="left" data-locale="vi"></div>
+  </div>
+  <p class="login-foot">Sàn TMĐT Thanh Hóa · production</p>
+</main></body></html>`;
+    }
+    return `${head(title)}<body class="login-page">
 <main class="login">
   <img class="login-logo" src="/logo.svg" alt="THiHUB">
   <form method="post" action="/login" class="login-card">
-    <h1>Staging Deploy</h1>
+    <h1>${esc(title)}</h1>
     <p class="muted">Build và triển khai lên môi trường staging</p>
     ${o.error ? `<div class="alert alert-bad">${esc(o.error)}</div>` : ""}
     <label class="field"><span>Tên của bạn</span>
@@ -23,9 +44,9 @@ export function pageHtml(o: { user?: string; error?: string; name?: string }) {
 </main></body></html>`;
   }
   const initial = esc(o.user.trim().split(/\s+/).pop()!.charAt(0).toUpperCase());
-  return `${HEAD}<body>
+  return `${head(title)}<body data-env="${envName}">
 <header class="topbar">
-  <div class="brand"><img src="/logo.svg" alt="THiHUB"><span class="brand-sep"></span><span class="brand-app">Staging Deploy</span></div>
+  <div class="brand"><img src="/logo.svg" alt="THiHUB"><span class="brand-sep"></span><span class="brand-app">${esc(title)}</span></div>
   <div class="topbar-r">
     <button class="flux-chip" id="flux-chip" title="Trạng thái đồng bộ Flux · bấm để đồng bộ lại"><span class="dot"></span><span class="txt">Flux</span></button>
     <div class="user"><span class="avatar">${initial}</span><span class="user-name">${esc(o.user)}</span></div>
@@ -36,11 +57,11 @@ export function pageHtml(o: { user?: string; error?: string; name?: string }) {
   <div class="col-main">
     <div id="alerts"></div>
     <section class="panel">
-      <div class="panel-h"><h2>Build mới</h2><span class="panel-sub">Từ code đã push lên GitHub</span></div>
+      <div class="panel-h"><h2>Build mới</h2><span class="panel-sub">${prod ? "Chỉ mã đã merge vào main" : "Từ code đã push lên GitHub"}</span></div>
       <div class="panel-b build">
         <label class="field"><span>Nhánh hoặc commit</span>
           <div class="input-icon"><svg viewBox="0 0 24 24"><path d="M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM18 9a9 9 0 0 1-9 9"/></svg>
-          <input id="b-ref" value="staging" list="b-branches" autocomplete="off" spellcheck="false"></div>
+          <input id="b-ref" value="${esc(o.branch ?? envName)}" list="b-branches" autocomplete="off" spellcheck="false"></div>
           <datalist id="b-branches"></datalist>
         </label>
         <div class="commit-line" id="b-ref-info"></div>
@@ -55,7 +76,7 @@ export function pageHtml(o: { user?: string; error?: string; name?: string }) {
       </div>
     </section>
     <section class="panel">
-      <div class="panel-h"><h2>Service trên staging</h2></div>
+      <div class="panel-h"><h2>Service trên ${envName}</h2></div>
       <div id="services" class="svc-list"><div class="empty">Đang tải…</div></div>
     </section>
   </div>
