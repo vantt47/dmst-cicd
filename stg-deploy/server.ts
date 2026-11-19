@@ -56,8 +56,8 @@ const REG = "ghcr.io/khcn-thanh-hoa";
 // Biến build của ảnh web (staging trùng build-push.yml). Chế độ tên miền: ke-hoach-5-san/tich-hop-5-san/08-che-do-ten-mien-con-va-duong-dan.md
 const WEB_ARGS = PROD ? {
   VITE_API_URL: E.PRODUCTION_API_URL ?? "https://sangiaodich.thanhhoa.gov.vn/api",
-  VITE_GOOGLE_CLIENT_ID: E.PRODUCTION_GOOGLE_CLIENT_ID ?? "764794139184-sn5rdvuqkqevqtrupcl8kkm7p53h5d1g.apps.googleusercontent.com",
-  VITE_SELLER_CENTER_URL: E.PRODUCTION_SELLER_CENTER_URL ?? "https://nguoiban.sangiaodich.thanhhoa.gov.vn",
+  VITE_GOOGLE_CLIENT_ID: E.PRODUCTION_GOOGLE_CLIENT_ID ?? "764794139184-g67511rmlialb3mhob7p7k7u6s1rter2.apps.googleusercontent.com",
+  VITE_SELLER_CENTER_URL: E.PRODUCTION_SELLER_CENTER_URL ?? "https://nguoiban-sgd.dmst.vn",
   SAN_TEN_MIEN: E.PRODUCTION_SAN_TEN_MIEN ?? "",
 } : {
   VITE_API_URL: E.STAGING_API_URL ?? "https://sangiaodich.dmst.vn/api",
