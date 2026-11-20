@@ -612,7 +612,7 @@ async function afterCommit(svcs: Service[], log: (l: string) => void) {
       const imgs = [...(spec.initContainers ?? []), ...spec.containers].map((c: any) => c.image as string);
       const tagsOk = svcs.filter((s) => deploysOf(s).includes(key)).every((s) => kt && imgs.includes(`${s.image}:${kt[s.key]}`));
       const st = d.status ?? {};
-      const ok = tagsOk && st.observedGeneration >= d.metadata.generation && st.updatedReplicas === d.spec.replicas && st.availableReplicas === d.spec.replicas && (st.replicas ?? 0) === d.spec.replicas;
+      const ok = tagsOk && st.observedGeneration >= d.metadata.generation && (st.updatedReplicas ?? 0) === (d.spec.replicas ?? 1) && (st.availableReplicas ?? 0) === (d.spec.replicas ?? 1) && (st.replicas ?? 0) === (d.spec.replicas ?? 1);
       parts.push(`${name}: ${tagsOk ? "" : "chờ Flux áp thẻ mới, "}${st.updatedReplicas ?? 0}/${d.spec.replicas} cập nhật, ${st.availableReplicas ?? 0} sẵn sàng`);
       if (!ok) done = false;
     }
@@ -677,7 +677,7 @@ async function state() {
       specTag: c ? tagOfImage(c.image) : null,
       gitTag: gitErr ? null : (git as Record<string, string | null>)[s.key],
       replicas: d?.spec?.replicas ?? 0, ready: st.readyReplicas ?? 0, updated: st.updatedReplicas ?? 0,
-      rolloutDone: d ? (st.observedGeneration ?? 0) >= d.metadata.generation && st.updatedReplicas === d.spec.replicas && (st.replicas ?? 0) === d.spec.replicas && st.availableReplicas === d.spec.replicas : false,
+      rolloutDone: d ? (st.observedGeneration ?? 0) >= d.metadata.generation && (st.updatedReplicas ?? 0) === (d.spec.replicas ?? 1) && (st.replicas ?? 0) === (d.spec.replicas ?? 1) && (st.availableReplicas ?? 0) === (d.spec.replicas ?? 1) : false,
       restartedAt: d?.spec?.template?.metadata?.annotations?.["kubectl.kubernetes.io/restartedAt"] ?? null,
       pods: mine.map(({ labels, ...p }) => ({ ...p, runningTag: p.images[s.init ?? s.container!] ?? null })),
     };
