@@ -43,6 +43,7 @@ const REPO_URL = E.REPO_URL ?? "git@github-tt47:KHCN-Thanh-Hoa/doanhnghiepso.git
 const GH_REPO = "KHCN-Thanh-Hoa/doanhnghiepso";
 const DEPLOY_BRANCH = E.DEPLOY_BRANCH ?? "staging";
 const SSH_HOST = E.SSH_HOST ?? "HappyFinate"; // alias trong ~/.ssh/config của user Windows
+const VPS_NAME = E.VPS_NAME ?? "Senow"; // tên VPS hiện trên giao diện (alias SSH thật vẫn là SSH_HOST)
 const REMOTE_DIR = E.REMOTE_DIR ?? "/opt/dnso-staging";
 const SITE = E.SITE ?? "https://dmst.senow.tech";
 const SITE_HOST = new URL(SITE).host;
@@ -217,7 +218,7 @@ function mayVps(force = false): Promise<May> {
   const p = (async (): Promise<May> => {
     const empty = { phienBan: null, subject: null, dangBuild: false, services: [], sucKhoe: null, lichSu: [], nhanh: null, luc: new Date().toISOString() };
     const r = await ssh(`cd ${RD} && echo "@@PB" && cat PHIEN_BAN 2>/dev/null; echo "@@LOCK" && (flock -n .build.lock true 2>/dev/null && echo ranh || echo ban); echo "@@PS" && docker compose ps -a --format json; echo "@@LS" && tail -n 30 lich-su-trien-khai.log 2>/dev/null; echo "@@SK" && curl -sk -m 8 --resolve ${SITE_HOST}:443:127.0.0.1 https://${SITE_HOST}/suc-khoe; echo`, { quiet: true });
-    if (r.code !== 0) return { ok: false, error: `Không SSH được tới ${SSH_HOST}: ${r.out.trim().split("\n").slice(-2).join(" ")}`, ...empty };
+    if (r.code !== 0) return { ok: false, error: `Không SSH được tới VPS ${VPS_NAME}: ${r.out.trim().split("\n").slice(-2).join(" ")}`, ...empty };
     // Tách theo dòng đánh dấu "@@XYZ" (phần rỗng, vd. chưa có lịch sử, vẫn đúng)
     const sec: Record<string, string[]> = {};
     let cur = "";
@@ -312,7 +313,7 @@ async function baoKetThuc(j: Job, log: (l: string) => void) {
     const ok = j.status === "ok";
     await dnsoPost({
       trangThai: ok ? "success" : "failure",
-      tieuDe: ok ? "Staging DNSO (HappyFinate) đã cập nhật bản mới, mời mọi người vào kiểm tra" : "Cập nhật staging DNSO (HappyFinate) thất bại: vẫn chạy bản cũ, đội kỹ thuật đang xử lý",
+      tieuDe: ok ? "Staging DNSO (Senow) đã cập nhật bản mới, mời mọi người vào kiểm tra" : "Cập nhật staging DNSO (Senow) thất bại: vẫn chạy bản cũ, đội kỹ thuật đang xử lý",
       tacGia: j.user,
       thoiLuong: thoiLuong(Date.parse(j.ended ?? new Date().toISOString()) - Date.parse(j.started!)),
       khoaGop: `DNSO|staging-hf|${j.sha}|${j.id}`,
@@ -388,7 +389,7 @@ async function buildJob(j: Job, log: (l: string) => void) {
   if (may.dangBuild) throw new Error("VPS đang có lượt build khác (khoá .build.lock), đợi xong rồi bấm lại");
   j.bao = { tu: may.phienBan ? await resolveSha(may.phienBan) : null, den: sha };
 
-  log(""); log(`══ Đẩy commit sang ${SSH_HOST}:${REMOTE_DIR}/repo.git`);
+  log(""); log(`══ Đẩy commit sang VPS ${VPS_NAME} (${REMOTE_DIR}/repo.git)`);
   await sshMust(`test -d ${RD}/repo.git || git init -q --bare ${RD}/repo.git; mkdir -p ${RD}/nhat-ky-build`);
   const t0 = Date.now();
   await must(["git", "-C", REPO, "push", "-q", "--force", `${SSH_HOST}:${REMOTE_DIR}/repo.git`, `${sha}:refs/heads/${DEPLOY_BRANCH}`],
@@ -474,7 +475,7 @@ const sameOrigin = (req: Request) => {
   try { return new URL(req.headers.get("origin") ?? "").host === req.headers.get("host"); } catch { return false; }
 };
 const newId = () => new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14) + "-" + randomBytes(2).toString("hex");
-const cfg = { deployBranch: DEPLOY_BRANCH, sshHost: SSH_HOST, remoteDir: REMOTE_DIR, site: SITE, repo: GH_REPO };
+const cfg = { deployBranch: DEPLOY_BRANCH, sshHost: VPS_NAME, remoteDir: REMOTE_DIR, site: SITE, repo: GH_REPO };
 
 const server = Bun.serve({
   port: PORT,

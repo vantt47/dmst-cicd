@@ -1,8 +1,8 @@
-// Khung HTML trang build staging DNSO trên VPS HappyFinate. CSS dùng chung với stg-deploy + dnso-stg; JS ở app.js.
+// Khung HTML trang build staging DNSO trên VPS Senow. CSS dùng chung với stg-deploy + dnso-stg; JS ở app.js.
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
 const HEAD = `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Staging DNSO · HappyFinate</title><link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/app.css"><meta name="robots" content="noindex,nofollow"></head>`;
+<title>Staging DNSO · Senow</title><link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/app.css"><meta name="robots" content="noindex,nofollow"></head>`;
 
 type Cfg = { deployBranch: string; sshHost: string; remoteDir: string; site: string; repo: string };
 
@@ -12,8 +12,8 @@ export function pageHtml(o: { user?: string; error?: string; name?: string } & P
 <main class="login">
   <img class="login-logo" src="/logo.svg" alt="DNSO">
   <form method="post" action="/login" class="login-card">
-    <h1>Staging DNSO · HappyFinate</h1>
-    <p class="muted">Build nhánh staging lên VPS HappyFinate</p>
+    <h1>Staging DNSO · Senow</h1>
+    <p class="muted">Build nhánh staging lên VPS Senow</p>
     ${o.error ? `<div class="alert alert-bad">${esc(o.error)}</div>` : ""}
     <label class="field"><span>Tên của bạn</span>
       <input name="name" required minlength="2" maxlength="40" autocomplete="nickname" value="${esc(o.name ?? "")}" placeholder="Nguyễn Văn An" autofocus></label>
@@ -27,7 +27,7 @@ export function pageHtml(o: { user?: string; error?: string; name?: string } & P
   const initial = esc(o.user.trim().split(/\s+/).pop()!.charAt(0).toUpperCase());
   return `${HEAD}<body>
 <header class="topbar">
-  <div class="brand"><img src="/logo.svg" alt="DNSO"><span class="brand-sep"></span><span class="brand-app">Staging DNSO · HappyFinate</span></div>
+  <div class="brand"><img src="/logo.svg" alt="DNSO"><span class="brand-sep"></span><span class="brand-app">Staging DNSO · Senow</span></div>
   <div class="topbar-r">
     <a class="flux-chip" id="site-chip" href="${esc(o.site!)}" target="_blank" rel="noopener" title="Mở staging"><span class="dot"></span><span class="txt">Staging</span></a>
     <div class="user"><span class="avatar">${initial}</span><span class="user-name">${esc(o.user)}</span></div>

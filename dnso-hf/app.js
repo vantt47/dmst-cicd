@@ -1,5 +1,5 @@
 "use strict";
-// Trang Staging DNSO · HappyFinate (không framework). Dùng chung lớp CSS với stg-deploy / dnso-stg.
+// Trang Staging DNSO · Senow (không framework). Dùng chung lớp CSS với stg-deploy / dnso-stg.
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -185,7 +185,7 @@ $("#b-go").onclick = async () => {
   const ref = $("#b-ref").value.trim();
   if (!REF) return toast("Chưa đọc được commit", true);
   const ok = await confirmBox("Build & deploy",
-    "Build <code>" + esc(ref) + "</code> @<code>" + esc(REF.sha.slice(0, 8)) + "</code> trên VPS HappyFinate rồi triển khai lên staging"
+    "Build <code>" + esc(ref) + "</code> @<code>" + esc(REF.sha.slice(0, 8)) + "</code> trên VPS Senow rồi triển khai lên staging"
     + " (migrate CSDL staging, khởi động lại web/worker, gián đoạn vài giây). Build mất khoảng 5–10 phút.", "Build & deploy");
   if (!ok) return;
   $("#b-go").disabled = true;
