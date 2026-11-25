@@ -30,6 +30,28 @@ Máy staging `DMST_05` (`/opt/dnso-staging`): bộ `trien-khai/` của kho DNSO 
 Postgres 18 tự chạy (vai trò `postgres`/`erp`/`cds_app` như prod), Cloudflare Tunnel `dnso-staging` cho `dmst`, `az`,
 `nen-tang.senow.tech`. Miền staging chính: `stg-dmst-dnso.dmst.vn`, khai là tên miền riêng `hoat_dong` của doanh nghiệp `dmst` trong `platform.ten_mien_rieng` của CSDL staging. Mật khẩu vai trò CSDL ở `/opt/dnso-staging/.mat-khau-vai-tro`.
 
+## dnso-hf
+
+Trang build staging DNSO lên VPS HappyFinate: https://hf-deploy-dnso.senow.tech (staging chạy ở `dmst`, `az`,
+`nen-tang.senow.tech`, thư mục `/opt/dnso-staging` trên VPS). Độc lập với dnso-stg (DMST_05).
+
+- Chạy trên PC quản trị (Windows, Bun, Git, SSH alias `HappyFinate`, cloudflared), cổng 8100, thư mục làm việc
+  `D:\DMST\dnso-hf-work`, Scheduled Task `dnso-hf`, tunnel `dnso-hf-deploy` (tài khoản senow.tech).
+- Dev chọn nhánh/commit (mặc định `staging`) rồi bấm **Build & deploy**. PC fetch kho DNSO từ GitHub và `git push`
+  đúng commit đó vào kho trần `/opt/dnso-staging/repo.git` trên VPS (VPS không có quyền đọc kho trên GitHub). Sau đó
+  **VPS tự build** bằng [dnso-hf/vps/build-tu-git.sh](dnso-hf/vps/build-tu-git.sh) (PC chép đè mỗi lượt): `git archive`
+  → `bun install` + `bun run build` trong container giới hạn 1.5 CPU / 4 GB → đổi `src` → migrate → dựng lại web +
+  worker → chờ `/suc-khoe` qua Traefik. Migrate lỗi hoặc bản mới không lành thì tự trả mã cũ về.
+- Script chạy tách khỏi phiên SSH (`setsid nohup`, log ở `/opt/dnso-staging/nhat-ky-build/`) và giữ khoá
+  `.build.lock`, nên PC rớt mạng giữa chừng không làm hỏng lượt build và hai lượt không chạy chồng nhau.
+- Bản đang chạy: `/opt/dnso-staging/PHIEN_BAN`; lịch sử: `lich-su-trien-khai.log`. Một lượt khoảng 7–8 phút
+  (build ~2,5 phút, migrate ~4,5 phút).
+- Báo nhóm Nhắn tin DNSO khi `secrets.json` có `DNSO_API_KEY`, `DNSO_THAY_MAT`, `DNSO_NHOM_ID` (mặc định chưa bật).
+
+```powershell
+powershell -ExecutionPolicy Bypass -File dnso-hf\start.ps1 -Install
+```
+
 ## stg-deploy
 
 Trang build/deploy staging cho Sàn TMĐT: https://stg-deploy-sangiaodich.dmst.vn
