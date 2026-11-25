@@ -399,8 +399,18 @@ async function buildJob(j: Job, log: (l: string) => void) {
   // Chép script build (bản trong repo dmst-cicd) rồi chạy tách khỏi phiên SSH
   await must([...SSH, `cat > ${RD}/build-tu-git.sh && chmod +x ${RD}/build-tu-git.sh`], { stdin: new Blob([BUILD_SCRIPT]) });
   const logRemote = `nhat-ky-build/${j.id}.log`;
-  const pid = (await sshMust(`cd ${RD} && setsid nohup bash build-tu-git.sh ${sha} ${shq(j.user)} > ${logRemote} 2>&1 < /dev/null & echo $!`)).trim();
-  if (!/^\d+$/.test(pid)) throw new Error(`Không chạy được build-tu-git.sh trên VPS: ${pid.slice(0, 200)}`);
+  // `cd` phải là lệnh riêng: viết `cd X && setsid … &` thì bash đưa CẢ chuỗi vào một subshell nền, subshell đó giữ
+  // kênh SSH và ssh thoát mã 255 dù build đã chạy (lỗi 25/11/2026). Vì vậy ssh báo lỗi ở bước này chưa chắc là build
+  // chưa chạy: tìm lại tiến trình theo sha trước khi kết luận.
+  const st = await ssh(`cd ${RD} || exit 1; setsid nohup bash build-tu-git.sh ${sha} ${shq(j.user)} > ${logRemote} 2>&1 < /dev/null & echo "@@PID $!"`);
+  let pid = st.out.match(/@@PID (\d+)/)?.[1] ?? "";
+  if (st.code !== 0) {
+    log(`⚠ SSH khởi chạy báo mã ${st.code}, kiểm tra trên VPS xem build đã chạy chưa…`);
+    await Bun.sleep(2000);
+    const tim = await ssh(`(test -n "${pid}" && kill -0 ${pid} 2>/dev/null && echo ${pid}) || pgrep -o -f ${shq(`build-tu-git.sh ${sha}`)} || true`, { quiet: true });
+    pid = tim.out.match(/^\d+$/m)?.[0] ?? "";
+  }
+  if (!pid) throw new Error(`Không chạy được build-tu-git.sh trên VPS: ${st.out.trim().split("\n").slice(-2).join(" ").slice(0, 200)}`);
   log(`VPS bắt đầu build (pid ${pid}, log ${REMOTE_DIR}/${logRemote}).`);
 
   // Đọc log tới khi script thoát. Rớt SSH thì nối lại, đọc tiếp từ dòng đã có.
