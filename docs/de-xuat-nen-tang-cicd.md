@@ -14,9 +14,13 @@ Ngày: 22/11/2026 · Trạng thái: **đã chốt phạm vi (27/11/2026)**, đan
 
 Dự án staging đưa sang nền tảng: Sàn TMĐT (`stg-deploy`), DNSO DMST_05 (`dnso-stg`), DNSO HappyFinate (`dnso-hf`), thi-vien-chuc (`tvc-stg`).
 
-Việc thủ công cần làm: thêm public hostname `cicd.dmst.vn` → `http://127.0.0.1:8090` vào một tunnel trên tài khoản Cloudflare dmst.vn
-(token API hiện không có quyền Tunnel ở tài khoản đó, phải làm trên dashboard hoặc nhờ chủ zone), và thêm
-`https://cicd.dmst.vn` vào Authorized JavaScript origins của OAuth client Google dùng cho trang.
+Tunnel: đã xong (27/11). `cicd.dmst.vn` → `http://127.0.0.1:8090` là một luật của tunnel `stg-deploy-pc`
+(`e2cb9531…`, cùng tunnel với stg-/prod-deploy-sangiaodich, connector đang chạy từ `stg-deploy-work`), kèm CNAME có proxy.
+Sửa bằng token `CLOUDFLARE_API_TOKEN_DMST`. Tunnel cho phép nhiều connector cùng lúc, nên khi nền tảng chạy thật,
+`TUNNEL_TOKEN` của nó có thể là token của chính tunnel này.
+
+Việc thủ công còn lại: thêm `https://cicd.dmst.vn` (và `http://localhost:8090` để thử) vào Authorized JavaScript origins
+của OAuth client Google dùng cho trang.
 
 ### Tiến độ
 
@@ -25,7 +29,7 @@ Việc thủ công cần làm: thêm public hostname `cicd.dmst.vn` → `http://
 | 1a. Lõi: SQLite, đăng nhập Google, phiên, token API, phân quyền dự án × môi trường, nhật ký kiểm toán, trang quản trị (người dùng, quyền, nhật ký, token) | Xong (27/11), bản xem trước |
 | 1b. CI chung (`platform/ci.ts`), hàng đợi theo môi trường (`platform/queue.ts`), báo nhóm DNSO (`platform/notify.ts`) | Xong (27/11), bản xem trước |
 | 1c. Adapter `gitops-kustomize` + **Sàn TMĐT staging** (`/p/san-tmdt/staging/`) | Xong (27/11), bản xem trước |
-| 1d. Chạy thật song song stg-deploy (`PREVIEW=0`, `start.ps1`, tunnel `cicd.dmst.vn`) | Chưa: chờ tunnel + OAuth origin |
+| 1d. Chạy thật song song stg-deploy (`PREVIEW=0`, `start.ps1`, tunnel `cicd.dmst.vn`) | Chưa: tunnel xong, chờ OAuth origin |
 | 2. Adapter `ssh-compose` (DNSO DMST_05, DNSO HappyFinate), adapter k8s trực tiếp (thi-vien-chuc) | Chưa |
 | 3. Tắt trang cũ, chuyển hướng tên miền cũ | Chưa |
 
