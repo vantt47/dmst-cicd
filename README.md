@@ -52,6 +52,38 @@ Trang build staging DNSO lên VPS HappyFinate: https://hf-deploy-dnso.senow.tech
 powershell -ExecutionPolicy Bypass -File dnso-hf\start.ps1 -Install
 ```
 
+## tvc-stg
+
+Trang CI/CD staging cho thi-vien-chuc (KHCN-Thanh-Hoa/thi-vien-chuc): https://stg-deploy-thi-vien-chuc.dmst.vn
+→ staging https://stg-thi-vien-chuc.dmst.vn (namespace `stg-thi-vien-chuc` trên cụm k3s staging chung).
+
+- Chạy trên PC quản trị (Windows, Bun, Docker Desktop đã đăng nhập GHCR, kubectl + `C:\Users\Admin\.kube\tmdt-staging.yaml`
+  qua Tailscale, cloudflared), cổng 8102, thư mục làm việc `D:\DMST\tvc-stg-work`, Scheduled Task `tvc-stg`,
+  tunnel `tvc-stg-deploy` (tài khoản dmst.vn). Đăng nhập: tên + mật khẩu chung `DEPLOY_PASSWORD` trong `secrets.json`.
+- **CI**: mỗi push vào `main` (`AUTO_CHECK_BRANCHES`) tự chạy Kiểm tra trong container dùng một lần
+  ([tvc-stg/kiem-tra.ts](tvc-stg/kiem-tra.ts), ảnh [tvc-stg/ci/Dockerfile](tvc-stg/ci/Dockerfile)), các nhóm song song:
+  CSDL (`schema.sql` + `seed.sql` trên Postgres 16 sạch, `seed.sql` lần hai để kiểm idempotent: chỉ cảnh báo),
+  Backend (`npm ci`, `prisma generate`, `npm run build`), Frontend (`npm ci`, `npm run build:uat`),
+  Candidate FE (chưa đóng gói vào staging: chỉ cảnh báo).
+- **CD**: commit đầu `main` qua kiểm tra thì tự Build & deploy (`AUTO_DEPLOY=0` để tắt): dựng ảnh
+  `thi-vien-chuc-app:stg-<sha7>` (Dockerfile.uat) và `thi-vien-chuc-db:stg-<sha7>` (Dockerfile.db của kho, không có thì
+  [tvc-stg/ci/Dockerfile.db](tvc-stg/ci/Dockerfile.db)), push GHCR, rồi `kubectl set image` + chờ rollout (không lành thì
+  `rollout undo`) + kiểm `/health`.
+- **CSDL** (dự án không có migration, `schema.sql` là DDL đầy đủ): băm git của `schema.sql`/`seed.sql` đang chạy ghi ở
+  annotation `dmst-cicd/schema`, `dmst-cicd/seed` của StatefulSet `db`.
+  - `schema.sql` đổi → **làm lại CSDL**: dừng app, `DROP SCHEMA public CASCADE`, chạy `schema.sql` + `seed.sql`
+    (mất dữ liệu staging). Bấm tay phải bật "Làm lại CSDL"; lượt tự động được phép khi `AUTO_RESET_DB=1` (mặc định),
+    `AUTO_RESET_DB=0` thì lượt tự động dừng lại chờ người quyết.
+  - chỉ `seed.sql` đổi → nạp lại `seed.sql` trong một transaction (seed phải idempotent).
+- **Đổi bản**: chạy lại một thẻ đã dựng (danh sách `builds.json`), khác schema thì phải chọn làm lại CSDL.
+- Manifest gốc (namespace, Deployment `app`, StatefulSet `db`, Ingress, quota, bí mật tạo tay) nằm ở `deploy/k8s/` của
+  kho thi-vien-chuc; trang chỉ đổi ảnh/annotation trên các đối tượng đã có.
+- Báo nhóm Nhắn tin DNSO khi `secrets.json` có `DNSO_API_KEY`, `DNSO_THAY_MAT`, `DNSO_NHOM_ID` (mặc định chưa bật).
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tvc-stg\start.ps1 -Install
+```
+
 ## stg-deploy
 
 Trang build/deploy staging cho Sàn TMĐT: https://stg-deploy-sangiaodich.dmst.vn
