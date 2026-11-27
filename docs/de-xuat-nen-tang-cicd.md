@@ -18,6 +18,29 @@ Việc thủ công cần làm: thêm public hostname `cicd.dmst.vn` → `http://
 (token API hiện không có quyền Tunnel ở tài khoản đó, phải làm trên dashboard hoặc nhờ chủ zone), và thêm
 `https://cicd.dmst.vn` vào Authorized JavaScript origins của OAuth client Google dùng cho trang.
 
+### Tiến độ
+
+| Bước | Trạng thái |
+|---|---|
+| 1a. Lõi: SQLite, đăng nhập Google, phiên, token API, phân quyền dự án × môi trường, nhật ký kiểm toán, trang quản trị (người dùng, quyền, nhật ký, token) | Xong (27/11), bản xem trước |
+| 1b. CI chung (`platform/ci.ts`), hàng đợi theo môi trường (`platform/queue.ts`), báo nhóm DNSO (`platform/notify.ts`) | Xong (27/11), bản xem trước |
+| 1c. Adapter `gitops-kustomize` + **Sàn TMĐT staging** (`/p/san-tmdt/staging/`) | Xong (27/11), bản xem trước |
+| 1d. Chạy thật song song stg-deploy (`PREVIEW=0`, `start.ps1`, tunnel `cicd.dmst.vn`) | Chưa: chờ tunnel + OAuth origin |
+| 2. Adapter `ssh-compose` (DNSO DMST_05, DNSO HappyFinate), adapter k8s trực tiếp (thi-vien-chuc) | Chưa |
+| 3. Tắt trang cũ, chuyển hướng tên miền cũ | Chưa |
+
+**Bản xem trước** (`PREVIEW=1`, mặc định): đọc trạng thái thật (cụm, git, GHCR, kết quả CI của trang cũ); chạy kiểm tra,
+build, push, commit đổi thẻ, Flux, restart, báo nhóm chỉ ghi lệnh ra log (`[THỬ] ...`). Không tự chạy CI khi push, không mở
+tunnel. Chạy thử trên PC:
+
+```powershell
+bun platform/server.ts   # http://localhost:8090, WORK_DIR mặc định D:\DMST\cicd-preview-work
+```
+
+Đăng nhập Google ở `http://localhost:8090` cần thêm origin này vào OAuth client. Đã kiểm 27/11 trên CSDL tạm: 30 ca ma trận
+quyền qua HTTP (chưa đăng nhập, không có quyền, viewer, developer, super admin; thiếu Origin bị chặn CSRF; super admin không
+bị khoá/hạ quyền), một lượt Build & deploy và một lượt Đổi bản giả lập đọc đúng trạng thái thật của Sàn staging.
+
 ---
 
 ## 1. Hiện trạng
