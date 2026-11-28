@@ -12,7 +12,7 @@ Ngày: 22/11/2026 · Trạng thái: **đã chốt phạm vi (27/11/2026)**, đan
 | 4 | Phạm vi: **chỉ môi trường staging**. Production (prod-deploy-sangiaodich) giữ nguyên trang riêng hiện tại; mục A1–A5, quy tắc 2 người, `can_duyet` để giai đoạn sau. |
 | 5 | Không áp dụng quy tắc 2 người (quyết định 23/11/2026). |
 
-Dự án staging đưa sang nền tảng: Sàn TMĐT (`stg-deploy`), DNSO DMST_05 (`dnso-stg`), DNSO HappyFinate (`dnso-hf`), thi-vien-chuc (`tvc-stg`).
+Dự án staging đưa sang nền tảng: Sàn TMĐT (`stg-deploy`), DNSO DMST_05 (`dnso-stg`), thi-vien-chuc (`tvc-stg`). DNSO HappyFinate (`dnso-hf`) không đưa sang, giữ trang riêng (28/11/2026).
 
 Tunnel: đã xong (27/11). `cicd.dmst.vn` → `http://127.0.0.1:8090` là một luật của tunnel `stg-deploy-pc`
 (`e2cb9531…`, cùng tunnel với stg-/prod-deploy-sangiaodich, connector đang chạy từ `stg-deploy-work`), kèm CNAME có proxy.
@@ -30,7 +30,7 @@ của OAuth client Google dùng cho trang.
 | 1b. CI chung (`platform/ci.ts`), hàng đợi theo môi trường (`platform/queue.ts`), báo nhóm DNSO (`platform/notify.ts`) | Xong (27/11), bản xem trước |
 | 1c. Adapter `gitops-kustomize` + **Sàn TMĐT staging** (`/p/san-tmdt/staging/`) | Xong (27/11), bản xem trước |
 | 1d. Chạy thật song song stg-deploy (`PREVIEW=0`, `start.ps1`, tunnel `cicd.dmst.vn`) | Chưa: tunnel xong, chờ OAuth origin |
-| 2. Adapter `ssh-compose` (DNSO DMST_05, DNSO HappyFinate), adapter k8s trực tiếp (thi-vien-chuc) | Chưa |
+| 2. Adapter `ssh-compose` (DNSO DMST_05, `/p/dnso/staging/`), `k8s-image` (thi-vien-chuc, `/p/thi-vien-chuc/staging/`) | Xong (28/11), bản xem trước; kết quả quét `D:\DMST` ở [quet-du-an-cicd.md](quet-du-an-cicd.md) |
 | 3. Tắt trang cũ, chuyển hướng tên miền cũ | Chưa |
 
 **Bản xem trước** (`PREVIEW=1`, mặc định): đọc trạng thái thật (cụm, git, GHCR, kết quả CI của trang cũ); chạy kiểm tra,

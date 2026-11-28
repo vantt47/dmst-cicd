@@ -328,7 +328,7 @@ $("#b-go").onclick = async () => {
     if (reason === null) return;
   }
   const ok = await confirmBox(only ? "Build" : "Build & deploy",
-    "Build <b>" + esc(services.map(svcLabel).join(", ")) + "</b> từ <code>" + esc(ref) + "</code> @<code>" + esc(sha.slice(0, 7)) + "</code>" + (passed ? " (đã qua kiểm tra)" : "") + (bypass ? ' <b style="color:#c0392b">BỎ QUA CHẶN: CI' + (passed ? "" : " chưa đạt") + ", Trivy chỉ cảnh báo</b>" : "") + (only ? ", chỉ đẩy ảnh lên GHCR." : " rồi triển khai lên " + ENV + "."),
+    "Build <b>" + esc(services.map(svcLabel).join(", ")) + "</b> từ <code>" + esc(ref) + "</code> @<code>" + esc(sha.slice(0, 7)) + "</code>" + (passed ? " (đã qua kiểm tra)" : "") + (bypass ? ' <b class="txt-bad">BỎ QUA CHẶN: CI' + (passed ? "" : " chưa đạt") + ", Trivy chỉ cảnh báo</b>" : "") + (only ? ", chỉ đẩy ảnh lên GHCR." : " rồi triển khai lên " + ENV + "."),
     only ? "Build" : "Build & deploy");
   if (!ok) return;
   $("#b-go").disabled = true;

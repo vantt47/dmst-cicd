@@ -11,14 +11,19 @@ import type { CiSpec } from "./ci";
 import type { DnsoCfg } from "./notify";
 import type { EnvAdapter } from "./adapters/types";
 import { GitopsAdapter, type GitopsCfg } from "./adapters/gitops";
+import { SshComposeAdapter, type SshComposeCfg } from "./adapters/ssh-compose";
+import { K8sImageAdapter, type K8sImageCfg } from "./adapters/k8s-image";
 
 export type EnvDef = {
   id: string; label: string;
   branch: string;          // nhánh mặc định trong ô Build
   autoDeploy: boolean;     // commit đầu `branch` qua CI thì tự Build & deploy
   site?: string;           // trang của môi trường (liên kết trên thẻ)
+  requireCi?: boolean;     // Build phải có CI đạt (mặc định true; bỏ qua chặn vẫn được nếu có quyền)
+  autoOpts?: Record<string, boolean>; // tuỳ chọn (adapter.options) cho lượt Build & deploy tự động
   notify?: DnsoCfg;
-  deploy: GitopsCfg;
+  // requireCi do phần khởi tạo điền vào cfg từ EnvDef, cấu hình không ghi lại
+  deploy: GitopsCfg | Omit<SshComposeCfg, "requireCi"> | Omit<K8sImageCfg, "requireCi">;
 };
 export type ProjectDef = {
   id: string; name: string; logo: string;
@@ -33,6 +38,7 @@ export type ProjectDef = {
 const CI_DIR = join(import.meta.dir, "ci");
 const REG = "ghcr.io/khcn-thanh-hoa";
 const M = "/w/ecommerce-monorepo";
+const TVC_NPM_CI = "npm ci --no-audit --no-fund --loglevel=error";
 const pkgGroup = (key: string) => ({
   key, label: key, dir: `${M}/${key}`,
   steps: [
@@ -111,6 +117,107 @@ export const PROJECTS: ProjectDef[] = [
       },
     ],
   },
+  {
+    // DNSO: CI = dnso-stg/kiem-tra.ts; staging trên DMST_05. (Staging Senow/HappyFinate không quản lý ở đây, quyết định 28/11/2026.)
+    id: "dnso", name: "DNSO", logo: "logo-dnso.svg",
+    repoUrl: E.DNSO_REPO_URL ?? "git@github-tt47:KHCN-Thanh-Hoa/doanhnghiepso.git", ghRepo: "KHCN-Thanh-Hoa/doanhnghiepso",
+    reference: "D:/DMST/dnso-stg-work/repo",
+    autoCheck: ["staging", "main"],
+    legacyChecksDir: "D:/DMST/dnso-stg-work/checks",
+    ci: {
+      name: "dnsoci", dockerDir: join(CI_DIR, "dnso"), workdir: "/w/app", cpus: 10, memory: "12g",
+      cache: "dnsoci-bun-cache:/root/.bun/install/cache", firstGroupFirst: true,
+      // CSDL kiểm thử trùng postgres-kiem-thu trong app/docker-compose.yml (cổng 5435, tmpfs)
+      sidecar: {
+        image: "postgres:16-alpine", memory: "2g",
+        runArgs: ["-e", "POSTGRES_USER=postgres", "-e", "POSTGRES_PASSWORD=cds_kiem_thu_pass", "-e", "POSTGRES_DB=cds_kiem_thu",
+          "-e", "TZ=Asia/Ho_Chi_Minh", "-e", "PGTZ=Asia/Ho_Chi_Minh", "--tmpfs", "/var/lib/postgresql/data"],
+        cmd: ["-c", "port=5435", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"],
+      },
+      groups: [
+        { key: "cai-dat", label: "Cài đặt", steps: [
+          { name: "bun install --frozen-lockfile", sh: "bun install --frozen-lockfile", retry: 1 },
+          { name: "Dựng CSDL kiểm thử (kiem-thu:csdl → scripts/migrate.ts)", sh: "bun run kiem-thu:csdl", timeoutMin: 15 },
+        ] },
+        { key: "typecheck", label: "Typecheck", steps: [{ name: "bun run typecheck", sh: "bun run typecheck", timeoutMin: 15 }] },
+        { key: "kiem-thu", label: "Kiểm thử", steps: [
+          { name: "kiem-thu:don-vi (tầng 1 + quét tầng 4 + tự kiểm tầng 5)", sh: "bun run kiem-thu:don-vi", timeoutMin: 20 },
+          { name: "kiem-thu:ten-mien (định tuyến tên miền)", sh: "bun run kiem-thu:ten-mien", timeoutMin: 5 },
+        ] },
+        { key: "build", label: "Build", steps: [{ name: "bun run build", sh: "bun run build", timeoutMin: 15 }] },
+      ],
+    },
+    envs: [
+      {
+        id: "staging", label: "Staging", branch: "staging", autoDeploy: true, site: "https://stg-dmst-dnso.dmst.vn",
+        notify: {
+          duAn: "DNSO", moiTruong: "staging", trang: "https://stg-dmst-dnso.dmst.vn",
+          ok: "Staging DNSO đã cập nhật bản mới, mời mọi người vào kiểm tra",
+          fail: "Cập nhật staging DNSO thất bại: vẫn chạy bản cũ, đội kỹ thuật đang xử lý",
+        },
+        deploy: {
+          kind: "ssh-compose", sshHost: E.DNSO_STG_SSH ?? "DMST_05", remoteDir: "/opt/dnso-staging",
+          site: "https://stg-dmst-dnso.dmst.vn", keepTags: 6, legacyJobsDir: "D:/DMST/dnso-stg-work/jobs",
+        },
+      },
+    ],
+  },
+  {
+    id: "thi-vien-chuc", name: "Thi viên chức", logo: "logo-tvc.svg",
+    repoUrl: E.TVC_REPO_URL ?? "git@github-tt47:KHCN-Thanh-Hoa/thi-vien-chuc.git", ghRepo: "KHCN-Thanh-Hoa/thi-vien-chuc",
+    reference: "D:/DMST/tvc-stg-work/repo",
+    autoCheck: ["main"],
+    legacyChecksDir: "D:/DMST/tvc-stg-work/checks",
+    // = tvc-stg/kiem-tra.ts: schema.sql + seed.sql trên Postgres 16 sạch, build backend, frontend (+ candidate, chỉ cảnh báo)
+    ci: {
+      name: "tvcci", dockerDir: join(CI_DIR, "tvc"), workdir: "/w", cpus: 6, memory: "8g",
+      cache: "tvcci-npm-cache:/root/.npm",
+      sidecar: {
+        image: "postgres:16-alpine", memory: "2g",
+        runArgs: ["-e", "POSTGRES_USER=recruit_ci", "-e", "POSTGRES_PASSWORD=recruit_ci", "-e", "POSTGRES_DB=recruit_exam_ci",
+          "-e", "TZ=Asia/Ho_Chi_Minh", "--tmpfs", "/var/lib/postgresql/data"],
+        cmd: ["-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"],
+      },
+      groups: [
+        { key: "csdl", label: "CSDL", steps: [
+          { name: "Chờ CSDL kiểm thử", sh: "for i in $(seq 1 60); do pg_isready -q && exit 0; sleep 1; done; exit 1", timeoutMin: 2 },
+          { name: "database/schema.sql", sh: "psql -v ON_ERROR_STOP=1 -q -f database/schema.sql", timeoutMin: 5 },
+          { name: "database/seed.sql", sh: "psql -v ON_ERROR_STOP=1 -q -f database/seed.sql", timeoutMin: 5 },
+          { name: "seed.sql lần 2 (idempotent)", sh: "psql -v ON_ERROR_STOP=1 -q -1 -f database/seed.sql", timeoutMin: 5, allowFail: true },
+        ] },
+        { key: "backend", label: "Backend", steps: [
+          { name: "npm ci", sh: TVC_NPM_CI, dir: "/w/backend", retry: 1, timeoutMin: 10 },
+          { name: "prisma generate", sh: "npx prisma generate", dir: "/w/backend", retry: 1, timeoutMin: 5 },
+          { name: "npm run build (nest build)", sh: "npm run build", dir: "/w/backend", timeoutMin: 10 },
+        ] },
+        { key: "frontend", label: "Frontend", steps: [
+          { name: "npm ci", sh: TVC_NPM_CI, dir: "/w/frontend", retry: 1, timeoutMin: 10 },
+          { name: "npm run build:uat (tsc + vite)", sh: "npm run build:uat", dir: "/w/frontend", timeoutMin: 10 },
+        ] },
+        { key: "candidate", label: "Candidate FE", steps: [
+          { name: "npm ci", sh: `test ! -d candidate-frontend || (cd candidate-frontend && ${TVC_NPM_CI})`, retry: 1, timeoutMin: 10, allowFail: true },
+          { name: "npm run build (tsc + vite)", sh: "test ! -d candidate-frontend || (cd candidate-frontend && npm run build)", timeoutMin: 10, allowFail: true },
+        ] },
+      ],
+    },
+    envs: [
+      {
+        id: "staging", label: "Staging", branch: "main", autoDeploy: true, site: "https://stg-thi-vien-chuc.dmst.vn",
+        autoOpts: { resetDb: true }, // = AUTO_RESET_DB=1 của tvc-stg: lượt tự động được làm lại CSDL khi schema.sql đổi
+        notify: {
+          duAn: "Thi viên chức", moiTruong: "staging", trang: "https://stg-thi-vien-chuc.dmst.vn",
+          ok: "Staging Thi viên chức đã cập nhật bản mới, mời mọi người vào kiểm tra",
+          fail: "Cập nhật staging Thi viên chức thất bại: vẫn chạy bản cũ, đội kỹ thuật đang xử lý",
+        },
+        deploy: {
+          kind: "k8s-image", kubeconfig: E.TVC_KUBECONFIG ?? "C:/Users/Admin/.kube/tmdt-staging.yaml", proxyPort: Number(E.TVC_PROXY_PORT ?? 8089),
+          ns: "stg-thi-vien-chuc", imgApp: `${REG}/thi-vien-chuc-app`, imgDb: `${REG}/thi-vien-chuc-db`,
+          dbUser: "recruit_uat", dbName: "recruit_exam_uat", site: "https://stg-thi-vien-chuc.dmst.vn", ghOrg: "KHCN-Thanh-Hoa",
+          legacyBuildsFile: "D:/DMST/tvc-stg-work/builds.json", legacyJobsDir: "D:/DMST/tvc-stg-work/jobs",
+        },
+      },
+    ],
+  },
 ];
 
 // ---------------- Khởi tạo ----------------
@@ -121,8 +228,12 @@ for (const p of PROJECTS) {
   const repo = new Repo(p.repoUrl, root, p.ghRepo, p.reference);
   const envs = new Map<string, { def: EnvDef; adapter: EnvAdapter }>();
   for (const e of p.envs) {
-    const adapter = e.deploy.kind === "gitops-kustomize" ? new GitopsAdapter(p.id, e.deploy, repo, join(root, e.id)) : null;
-    if (!adapter) throw new Error(`Kiểu triển khai không hỗ trợ: ${(e.deploy as any).kind}`);
+    const d = e.deploy, dir = join(root, e.id), requireCi = e.requireCi !== false;
+    const adapter: EnvAdapter =
+      d.kind === "gitops-kustomize" ? new GitopsAdapter(p.id, d, repo, dir)
+      : d.kind === "ssh-compose" ? new SshComposeAdapter(p.id, { ...d, requireCi }, repo, dir)
+      : d.kind === "k8s-image" ? new K8sImageAdapter(p.id, { ...d, requireCi }, repo, dir)
+      : (() => { throw new Error(`Kiểu triển khai không hỗ trợ: ${(d as any).kind}`); })();
     envs.set(e.id, { def: e, adapter });
   }
   RT.set(p.id, { def: p, repo, envs });

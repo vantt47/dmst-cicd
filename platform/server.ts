@@ -9,6 +9,7 @@
 //
 // Chạy thử: `bun platform/server.ts` rồi mở http://localhost:8090 (thêm http://localhost:8090 vào Authorized JavaScript
 // origins của OAuth client Google). Không có gói phụ thuộc, chỉ API có sẵn của Bun.
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { E, PORT, PREVIEW, PUBLIC_HOST, REF_OK, TAG_OK, children, keepAlive, lifecycle, newId, now, run, secret } from "./lib";
 import { db, audit, kvGet, kvSet } from "./db";
@@ -30,9 +31,10 @@ import { adminHtml, envHtml, homeHtml, loginHtml } from "./ui";
 // ---------------- Tệp tĩnh ----------------
 const WEB = join(import.meta.dir, "web");
 const STATIC: Record<string, [ArrayBuffer, string]> = {};
-for (const [f, t] of [["app.css", "text/css"], ["platform.css", "text/css"], ["login.js", "text/javascript"], ["gitops.js", "text/javascript"],
-  ["home.js", "text/javascript"], ["admin.js", "text/javascript"], ["logo-thihub.svg", "image/svg+xml"], ["logo-dnso.svg", "image/svg+xml"]] as const) {
-  STATIC[`/s/${f}`] = [await Bun.file(join(WEB, f)).arrayBuffer(), t + (t.startsWith("text") ? "; charset=utf-8" : "")];
+const MIME: Record<string, string> = { css: "text/css; charset=utf-8", js: "text/javascript; charset=utf-8", svg: "image/svg+xml" };
+for (const f of readdirSync(WEB)) { // mọi tệp css/js/svg trong web/ (giao diện từng kiểu adapter: web/<kind>.js)
+  const t = MIME[f.split(".").pop()!];
+  if (t) STATIC[`/s/${f}`] = [await Bun.file(join(WEB, f)).arrayBuffer(), t];
 }
 
 // ---------------- HTTP ----------------
@@ -139,10 +141,27 @@ async function autoDeploy(p: ProjectRt, c: CheckRun) {
     await p.repo.fetch(true);
     if ((await p.repo.resolveSha(`origin/${e.def.branch}`)) !== c.sha) continue;
     if (listJobs(p.def.id, eid, 10).some((j) => j.sha === c.sha && j.status !== "failed")) continue;
+    const cur = await e.adapter.currentSha?.().catch(() => null);
+    if (cur && c.sha.startsWith(cur)) continue; // môi trường đã chạy đúng commit này
     const env = envOf(p.def.id, eid)!;
     startJob(env, { kind: "build", user: AUTO_USER, userId: null, ref: e.def.branch, sha: c.sha, subject: c.subject, auto: true, deploy: true,
-      services: e.adapter.services.map((s) => s.key) });
+      services: e.adapter.wholeRelease ? releaseKeys(e.adapter) : e.adapter.services.map((s) => s.key), opts: e.def.autoOpts });
   }
+}
+
+// Bản phát hành trọn gói (wholeRelease): mọi service defaultBuild cùng một thẻ
+const releaseKeys = (a: EnvAdapter) => a.services.filter((s) => s.defaultBuild).map((s) => s.key);
+// Chỉ nhận tuỳ chọn adapter khai (boolean), đúng loại việc, và người bấm có quyền tương ứng
+function optsOf(a: EnvAdapter, raw: unknown, on: "build" | "deploy", need: (p: Perm) => void) {
+  const o: Record<string, boolean> = {};
+  for (const d of a.options ?? []) {
+    if (d.on !== on && d.on !== "both") continue;
+    const v = (raw as any)?.[d.key];
+    if (typeof v !== "boolean") continue;
+    if (v && d.perm) need(d.perm);
+    o[d.key] = v;
+  }
+  return o;
 }
 
 // ---------------- API theo dự án × môi trường ----------------
@@ -159,7 +178,9 @@ async function envApi(req: Request, url: URL, env: EnvRt, rest: string, u: User,
       const st = await adapter.state();
       return json({
         user: who, role, roleLabel: ROLE_LABEL[role], perms: PERMS[role], preview: PREVIEW,
-        project: { id: pid, name: p.def.name, repo: p.def.ghRepo }, env: { id: eid, label: env.def.label, branch: env.def.branch, autoDeploy: env.def.autoDeploy, site: env.def.site },
+        project: { id: pid, name: p.def.name, repo: p.def.ghRepo },
+        env: { id: eid, label: env.def.label, branch: env.def.branch, autoDeploy: env.def.autoDeploy, site: env.def.site, requireCi: env.def.requireCi !== false },
+        wholeRelease: !!adapter.wholeRelease, options: adapter.options ?? [], autoOpts: env.def.autoOpts ?? {},
         now: now(), ...st,
         jobs: listJobs(pid, eid).map((j) => ({ ...j, lines: undefined })),
         checks: listChecks(pid),
@@ -215,7 +236,8 @@ async function envApi(req: Request, url: URL, env: EnvRt, rest: string, u: User,
     need("build");
     const ref = String(body.ref ?? env.def.branch).trim();
     if (!REF_OK.test(ref)) bad("Nhánh/commit không hợp lệ");
-    const keys = (Array.isArray(body.services) ? body.services : []).filter((k: string) => adapter.services.some((s) => s.key === k));
+    const keys = adapter.wholeRelease ? releaseKeys(adapter)
+      : (Array.isArray(body.services) ? body.services : []).filter((k: string) => adapter.services.some((s) => s.key === k));
     if (!keys.length) bad("Chọn ít nhất 1 service");
     if (busyJobs(pid, eid) >= 5) return json({ error: "Hàng đợi đã có 5 việc, đợi bớt" }, 429);
     await p.repo.fetch(true);
@@ -225,19 +247,21 @@ async function envApi(req: Request, url: URL, env: EnvRt, rest: string, u: User,
     const bypass = body.bypass === true;
     const reason = String(body.reason ?? "").trim().slice(0, 300);
     if (bypass) { need("bypass"); if (reason.length < 5) bad("Bỏ qua chặn phải ghi lý do (ít nhất 5 ký tự)"); }
-    if (!bypass && checkOf(pid, r.sha)?.status !== "ok") return json({ error: `Commit ${r.sha.slice(0, 7)} chưa qua kiểm tra (CI). Bấm "Chạy kiểm tra" trước.` }, 409);
-    const j = startJob(env, { kind: "build", user: who, userId: u.id, ref, sha: r.sha, subject: r.subject, services: keys, deploy: body.deploy !== false, bypass, reason: bypass ? reason : undefined });
-    audit({ userId: u.id, actor: who, action: bypass ? "build.bypass" : "build", target, detail: { id: j.id, ref, sha: r.sha, services: keys, deploy: j.deploy, reason: j.reason }, ip });
+    if (!bypass && env.def.requireCi !== false && checkOf(pid, r.sha)?.status !== "ok") return json({ error: `Commit ${r.sha.slice(0, 7)} chưa qua kiểm tra (CI). Bấm "Chạy kiểm tra" trước.` }, 409);
+    const opts = optsOf(adapter, body.opts, "build", need);
+    const j = startJob(env, { kind: "build", user: who, userId: u.id, ref, sha: r.sha, subject: r.subject, services: keys, deploy: body.deploy !== false, bypass, reason: bypass ? reason : undefined, opts });
+    audit({ userId: u.id, actor: who, action: bypass ? "build.bypass" : "build", target, detail: { id: j.id, ref, sha: r.sha, services: keys, deploy: j.deploy, reason: j.reason, opts }, ip });
     return json({ ok: true, id: j.id });
   }
   if (rest === "deploy") {
     need("deploy");
-    const s = adapter.services.find((x) => x.key === body.svc);
-    if (!s) bad("Service không hợp lệ");
     const tag = String(body.tag ?? "").trim();
     if (!TAG_OK.test(tag)) bad("Thẻ ảnh không hợp lệ");
-    const j = startJob(env, { kind: "deploy", user: who, userId: u.id, ref: tag, services: [s!.key], deploy: true, tags: { [s!.key]: tag } });
-    audit({ userId: u.id, actor: who, action: "deploy", target, detail: { id: j.id, svc: s!.key, tag }, ip });
+    const keys = adapter.wholeRelease ? releaseKeys(adapter) : [adapter.services.find((x) => x.key === body.svc)?.key ?? bad("Service không hợp lệ")];
+    if (busyJobs(pid, eid) >= 5) return json({ error: "Hàng đợi đã có 5 việc, đợi bớt" }, 429);
+    const opts = optsOf(adapter, body.opts, "deploy", need);
+    const j = startJob(env, { kind: "deploy", user: who, userId: u.id, ref: tag, services: keys, deploy: true, tags: Object.fromEntries(keys.map((k) => [k, tag])), opts });
+    audit({ userId: u.id, actor: who, action: "deploy", target, detail: { id: j.id, services: keys, tag, opts }, ip });
     return json({ ok: true, id: j.id });
   }
   if (rest === "restart") {

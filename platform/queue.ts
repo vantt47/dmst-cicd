@@ -18,6 +18,7 @@ export type Job = {
   ref: string; sha?: string; subject?: string; services: string[]; deploy: boolean; bypass?: boolean; reason?: string; auto?: boolean;
   status: Status; created: string; started?: string; ended?: string; error?: string;
   tags: Record<string, string>; commit?: string | null;
+  opts?: Record<string, boolean>;  // tuỳ chọn adapter khai ở `options` (migrate, làm lại CSDL...)
   notify?: { phienBan: string; tu: string | null; den: string | null };
 };
 
