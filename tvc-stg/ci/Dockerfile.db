@@ -1,0 +1,10 @@
+# Ảnh CSDL staging của thi-vien-chuc: PostgreSQL 16 có sẵn database/schema.sql + seed.sql của đúng commit được triển khai.
+# Dùng khi kho ứng dụng chưa có Dockerfile.db ở commit đó (tvc-stg ưu tiên Dockerfile.db của kho nếu có).
+# Ngữ cảnh dựng: thư mục giải nén từ `git archive <sha> database docker/init-db.sh`.
+# Lần đầu khởi động với volume trống, docker/init-db.sh chạy schema.sql rồi seed.sql (SEED_SAMPLE_DATA=true).
+# Volume đã có dữ liệu thì KHÔNG chạy lại: tvc-stg tự nạp lại seed.sql hoặc làm lại CSDL khi schema.sql đổi.
+FROM postgres:16-alpine
+COPY database/schema.sql database/seed.sql /docker-db-scripts/
+COPY docker/init-db.sh /docker-entrypoint-initdb.d/01-init-db.sh
+RUN sed -i 's/\r$//' /docker-entrypoint-initdb.d/01-init-db.sh /docker-db-scripts/*.sql \
+    && chmod 755 /docker-entrypoint-initdb.d/01-init-db.sh
